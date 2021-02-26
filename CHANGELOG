@@ -1,0 +1,34 @@
+v0.2.4
+- Support both Alpaca market data and Polygon in live mode.
+  * "APIKey" in User input, use Alpaca market data
+  * "APIKey_APIKey" in User input, use Polygon market data.
+- [bug fix] - In live mode, historical market data download might use 60 minutes bar which
+  is not supported by Alpaca.
+- Added LastTrade price type support. 
+- Implement GET_PRICETYPE broker command
+- [bug fix] Not return correct short position
+
+v0.2.3
+[bugfix] - Fix Polygon historical data download stuck when there is no more data to download.
+
+v0.2.2
+- Add PIPCost in generated asset list
+
+v0.2.1
+[Feature] - Add AssetList download broker command.
+[Improvement] - Handle asset not found.
+[bugfix] - When switching to Alpaca market data, log message still shows Polygon.
+[bugfix] - Empty bars causes crash in diagnostic.
+
+v0.2.0
+[new feature] - Added Polygon market data support.
+[bugfix] - Fix order replacement.
+
+v0.1.2
+[hotfix] - Change Live market data api url to Alpaca market data.
+
+v0.1.1
+[hotfix] - Fix Quote deserialization cause crash in prod build.
+
+v0.1.0
+- Initial Release
