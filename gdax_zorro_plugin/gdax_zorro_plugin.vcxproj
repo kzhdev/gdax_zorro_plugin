@@ -59,14 +59,14 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;GDAX_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>.\zorro;.\;..\third_party\rapidjson\include;..\third_party\</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>.\zorro;.\;..\third_party\rapidjson\include;..\third_party\;..\third_party\zorro_websocket_proxy\dependencies\slick_queue\include;..\third_party\zorro_websocket_proxy\zorro_websocket_proxy_client\include</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <ShowIncludes>false</ShowIncludes>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>cryptlib.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>..\third_party\cryptopp\$(Platform)\Output\$(Configuration)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>cryptlib.lib;zorro_websocket_proxy_client.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\third_party\cryptopp\$(Platform)\Output\$(Configuration)\;$(SolutionDir)$(Configuration)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -90,21 +90,18 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="gdax\ringbuffer.h" />
     <ClInclude Include="gdax\ticker.h" />
     <ClInclude Include="gdax\time.h" />
-    <ClInclude Include="gdax\trade.h" />
+    <ClInclude Include="gdax\fill.h" />
+    <ClInclude Include="gdax\websocket.h" />
     <ClInclude Include="gdax_zorro_plugin.h" />
     <ClInclude Include="gdax\account.h" />
     <ClInclude Include="gdax\product.h" />
     <ClInclude Include="gdax\client.h" />
-    <ClInclude Include="gdax\client_order_id_generator.h" />
     <ClInclude Include="gdax\json.h" />
     <ClInclude Include="gdax\order.h" />
-    <ClInclude Include="gdax\position.h" />
     <ClInclude Include="logger.h" />
     <ClInclude Include="market_data\candle.h" />
-    <ClInclude Include="market_data\quote.h" />
     <ClInclude Include="request.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="stdafx.h" />
@@ -126,6 +123,11 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\CHANGELOG" />
+    <None Include="..\BUILD.md" />
+    <None Include="..\README.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

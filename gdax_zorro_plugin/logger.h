@@ -19,11 +19,24 @@ namespace gdax {
         L_TRACE2,
     };
 
+    enum LogFilter : uint8_t {
+        LF_NONE = 0,
+        LF_ACCOUNTs = 1,
+        LF_PRODUCTS = 1 << 1,
+        LF_TICKER = 1 << 2,
+        LF_TIME = 1 << 3,
+        LF_ORDERS = 1 << 4,
+        LF_ORDER = 1 << 5,
+        LF_CANDLE = 1 << 6,
+        LF_FILL = 1 << 7,
+        LF_ALL = 0xFF,
+    };
+
     class Logger {
     public:
         Logger() {
 #ifdef _DEBUG
-            setLevel(LogLevel::L_TRACE);
+            setLevel(LogLevel::L_TRACE2);
 #endif
             if (level_ != LogLevel::L_OFF) {
                 open_log();
@@ -45,6 +58,9 @@ namespace gdax {
                 open_log();
             }
         }
+
+        uint8_t getFilter() const noexcept { return filter_; }
+        void getFilter(LogFilter filter) noexcept { filter_ = filter; }
 
         template<typename ... Args>
         void logInfo(const char* format, Args... args) {
@@ -117,8 +133,10 @@ namespace gdax {
         FILE* log_  = nullptr;
 #ifdef _DEBUG
         LogLevel level_ = LogLevel::L_DEBUG;
+        uint8_t filter_ = LogFilter::LF_ORDER | LogFilter::LF_ORDERS | LogFilter::LF_FILL;
 #else
         LogLevel level_ = LogLevel::L_OFF;
+        LogFilter filter_ = LogFilter::LF_NONE;
 #endif
     };
 }

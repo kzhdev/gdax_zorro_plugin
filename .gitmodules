@@ -4,3 +4,6 @@
 [submodule "third_party/cryptopp"]
 	path = third_party/cryptopp
 	url = https://github.com/weidai11/cryptopp.git
+[submodule "third_party/zorro_websocket_proxy"]
+	path = third_party/zorro_websocket_proxy
+	url = https://github.com/kzhdev/zorro_websocket_proxy.git

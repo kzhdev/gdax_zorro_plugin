@@ -18,6 +18,7 @@
 #include "gdax/client.h"
 #include "logger.h"
 #include "include/functions.h"
+#include "gdax/websocket.h"
 
 #define PLUGIN_VERSION	2
 
@@ -28,9 +29,11 @@ namespace {
     std::string s_asset;
     int s_multiplier = 1;
     Logger* s_logger = nullptr;
-    std::string s_nextOrderText;
     int s_priceType = 0;
-    std::unordered_map<uint32_t, Order> s_mapOrderByClientOrderId;
+    std::unique_ptr<GdaxWebsocket> wsClient;
+    bool s_postOnly = true;
+    std::string s_lastOrder;
+    double s_limitPrice = 0.;
 }
 
 namespace gdax
@@ -52,6 +55,8 @@ namespace gdax
         (FARPROC&)http_status = fpStatus;
         (FARPROC&)http_result = fpResult;
         (FARPROC&)http_free = fpFree;
+
+        wsClient = std::make_unique<GdaxWebsocket>();
         return;
     }
 
@@ -59,6 +64,7 @@ namespace gdax
     {
         if (!User) // log out
         {
+            wsClient->logout();
             return 0;
         }
 
@@ -72,6 +78,10 @@ namespace gdax
             client = std::make_unique<Client>(apiKey, passphrase, secret, isPaperTrading);
         }
         catch (const std::runtime_error&) {
+            return 0;
+        }
+
+        if (!wsClient->login(apiKey, passphrase, secret, isPaperTrading)) {
             return 0;
         }
         
@@ -113,9 +123,8 @@ namespace gdax
 
     DLLFUNC_C int BrokerAsset(char* Asset, double* pPrice, double* pSpread, double* pVolume, double* pPip, double* pPipCost, double* pLotAmount, double* pMarginCost, double* pRollLong, double* pRollShort)
     {
-        const auto& products = client->getProducts();
-        auto iter = products.find(Asset);
-        if (iter == products.end()) {
+        const auto* product = client->getProduct(Asset);
+        if (!product) {
             BrokerError(("Asset " + std::string(Asset) + " not found").c_str());
             return 0;
         }
@@ -151,7 +160,7 @@ namespace gdax
         }
 
         if (pLotAmount) {
-            *pLotAmount = iter->second.base_increment;
+            *pLotAmount = product->base_min_size;
         }
 
         if (pRollLong) {
@@ -185,12 +194,16 @@ namespace gdax
             auto response = client->getCandles(Asset, start, end, nTickMinutes * 60, nTicks);
             if (!response) {
                 BrokerError(response.what().c_str());
-                return barsDownloaded;
+                break;
             }
 
-            auto& candles = response.content();
-            s_logger->logDebug("%d candles downloaded\n", candles.candles.size());
-            for (auto& candle : candles.candles) {
+            if (response.content().candles.empty()) {
+                break;
+            }
+
+            auto& candles = response.content().candles;
+            s_logger->logDebug("%d candles downloaded\n", candles.size());
+            for (auto& candle : candles) {
                 __time32_t barCloseTime = candle.time + nTickMinutes * 60;
                 if (barCloseTime > end) {
                     // end time cannot exceeds tEnd
@@ -210,9 +223,10 @@ namespace gdax
                     break;
                 }
             }
-            firstCandelTime = candles.candles[candles.candles.size() - 1].time;
+            firstCandelTime = candles[candles.size() - 1].time;
             end = firstCandelTime - 30;
         } while (firstCandelTime > start && barsDownloaded < nTicks);
+        s_logger->logDebug("%d candles returned\n", barsDownloaded);
         return barsDownloaded;
     }
 
@@ -240,205 +254,174 @@ namespace gdax
 
     DLLFUNC_C int BrokerBuy2(char* Asset, int nAmount, double dStopDist, double dLimit, double* pPrice, int* pFill) 
     {
-        auto start = std::time(nullptr);
+        const auto* product = client->getProduct(Asset);
+        if (!product) {
+            BrokerError(("Invalid product " + std::string(Asset)).c_str());
+            return 0;
+        }
 
         OrderSide side = nAmount > 0 ? OrderSide::Buy : OrderSide::Sell;
         OrderType type = OrderType::Market;
         if (dLimit) {
             type = OrderType::Limit;
         }
-        std::string limit;
-        if (dLimit) {
-            limit = std::to_string(dLimit);
+
+        s_logger->logDebug("BrokerBuy2 %s nAmount=%d dStopDist=%f limit=%f\n", Asset, nAmount, dStopDist, dLimit);
+
+        auto response = client->submitOrder(product, std::abs(nAmount), side, type, s_tif, dLimit, dStopDist, s_postOnly);
+        if (!response) {
+            if (response.getCode() == -2) {
+                return -2;
+            }
+            if (response.what() != "time in force") {
+                BrokerError(response.what().c_str());
+            }
+            return 0;
         }
-        std::string stop;
-        if (dStopDist) {
 
+        auto& order = response.content();
+        s_lastOrder = order.id;
+
+        if (order.filled_size) {
+            if (pPrice) {
+                *pPrice = order.filled_price;
+            }
+            if (pFill) {
+                *pFill = order.filled_size / product->base_min_size;
+            }
+        }
+        return -1;
+    }
+
+    DLLFUNC_C int BrokerTrade(int nTradeID, double* pOpen, double* pClose, double* pCost, double *pProfit) {
+        if (nTradeID != -1) {
+            BrokerError(("nTradeID " + std::to_string(nTradeID) + " not valid. Need to be an UUID").c_str());
+            return NAY;
+        }
+        
+        Response<Order> response = client->getOrder(s_lastOrder);
+        if (!response) {
+            BrokerError(response.what().c_str());
+            return NAY;
         }
 
-        s_logger->logDebug("BrokerBuy2 %s orderText=%s nAmount=%d dStopDist=%f limit=%f\n", Asset, s_nextOrderText.c_str(), nAmount, dStopDist, dLimit);
+        auto& order = response.content();
 
-        auto response = client->submitOrder(Asset, std::abs(nAmount), side, type, s_tif, limit, stop, false, s_nextOrderText);
+        if (pOpen && order.filled_size) {
+            *pOpen = order.filled_price;
+        }
+
+        if (pCost && order.filled_size) {
+            *pCost = order.fill_fees;
+        }
+
+        const auto* product = client->getProduct(order.product_id.c_str());
+        return order.filled_size / product->base_min_size;
+    }
+
+    DLLFUNC_C int BrokerSell2(int nTradeID, int nAmount, double Limit, double* pClose, double* pCost, double* pProfit, int* pFill) {
+        s_logger->logDebug("BrokerSell2 nTradeID=%d nAmount=%d limit=%f\n", nTradeID, nAmount, Limit);
+
+        Response<Order> response = client->getOrder(s_lastOrder);
         if (!response) {
             BrokerError(response.what().c_str());
             return 0;
         }
 
-        auto* order = &response.content();
-        auto exchOrdId = order->id;
-        auto internalOrdId = order->internal_id;
-        s_mapOrderByClientOrderId.emplace(internalOrdId, *order);
-
-        if (order->filled_qty) {
-            if (pPrice) {
-                *pPrice = response.content().filled_avg_price;
-            }
-            if (pFill) {
-                *pFill = response.content().filled_qty;
-            }
-            //return -1;
-            return internalOrdId;
-        }
-
-        if (s_tif == TimeInForce::IOC || s_tif == TimeInForce::FOK) {
-            // order not filled in the submitOrder response
-            // query order status to get fill status
-            do {
-                auto response2 = client->getOrder(exchOrdId, false, true);
-                if (!response2) {
-                    break;
-                }
-                order = &response2.content();
-                s_mapOrderByClientOrderId[internalOrdId] = *order;
-                if (pPrice) {
-                    *pPrice = order->filled_avg_price;
-                }
-                if (pFill) {
-                    *pFill = order->filled_qty;
-                }
-
-                if (order->status == "canceled" ||
-                    order->status == "filled" ||
-                    order->status == "expired") {
-                    break;
-                }
-
-                auto timePast = std::difftime(std::time(nullptr), start);
-                if (timePast >= 30) {
-                    auto response3 = client->cancelOrder(exchOrdId);
-                    if (!response3) {
-                        BrokerError(("Failed to cancel unfilled FOK/IOC order " + exchOrdId + " " + response3.what()).c_str());
-                    }
-                    return 0;
-                }
-            } while (!order->filled_qty);
-        }
-        //return -1;
-        return internalOrdId;
-    }
-
-    DLLFUNC_C int BrokerTrade(int nTradeID, double* pOpen, double* pClose, double* pCost, double *pProfit) {
-        s_logger->logInfo("BrokerTrade: %d\n", nTradeID);
-       /* if (nTradeID != -1) {
-            BrokerError(("nTradeID " + std::to_string(nTradeID) + " not valid. Need to be an UUID").c_str());
-            return NAY;
-        }*/
-        
-        Response<Order> response;
-        auto iter = s_mapOrderByClientOrderId.find(nTradeID);
-        if (iter == s_mapOrderByClientOrderId.end()) {
-            // unknown order?
-            std::stringstream clientOrderId;
-            clientOrderId << "ZORRO_";
-            if (!s_nextOrderText.empty()) {
-                clientOrderId << s_nextOrderText << "_";
-            }
-            clientOrderId << nTradeID;
-            response = client->getOrderByClientOrderId(clientOrderId.str());
-            if (!response) {
-                BrokerError(response.what().c_str());
-                return NAY;
-            }
-            s_mapOrderByClientOrderId.insert(std::make_pair(nTradeID, response.content()));
-        }
-        else {
-            response = client->getOrder(iter->second.id);
-            if (!response) {
-                BrokerError(response.what().c_str());
-                return NAY;
-            }
-        }
-
         auto& order = response.content();
-        s_mapOrderByClientOrderId[nTradeID] = order;
-
-        if (pOpen) {
-            *pOpen = order.filled_avg_price;
-        }
-
-        if (pProfit && order.filled_qty) {
-            //auto resp = pMarketData->getLastQuote(order.symbol);
-            //if (resp) {
-            //    auto& quote = resp.content().quote;
-            //    *pProfit = order.side == OrderSide::Buy ? ((quote.ask_price - order.filled_avg_price) * order.filled_qty) : (order.filled_avg_price - quote.bid_price) * order.filled_qty;
-            //}
-        }
-        return order.filled_qty;
-    }
-
-    DLLFUNC_C int BrokerSell2(int nTradeID, int nAmount, double Limit, double* pClose, double* pCost, double* pProfit, int* pFill) {
-        s_logger->logDebug("BrokerSell2 nTradeID=%d nAmount=%d limit=%f\n", nTradeID,nAmount, Limit);
-
-        auto iter = s_mapOrderByClientOrderId.find(nTradeID);
-        if (iter == s_mapOrderByClientOrderId.end()) {
-            BrokerError(("Order " + std::to_string(nTradeID) + " not found.").c_str());
-            return 0;
-        }
-
-        auto& order = iter->second;
-        if (order.status == "filled") {
+        if (order.status == "done" || (order.filled_size && order.filled_size >= std::abs(nAmount))) {
             // order has been filled
-            auto closeTradeId = BrokerBuy2((char*)order.symbol.c_str(), -nAmount, 0, Limit, pProfit, pFill);
+            auto closeTradeId = BrokerBuy2((char*)order.product_id.c_str(), -nAmount, 0, Limit, pClose, pFill);
             if (closeTradeId) {
-                auto iter2 = s_mapOrderByClientOrderId.find(closeTradeId);
-                if (iter2 != s_mapOrderByClientOrderId.end()) {
-                    auto& closeTrade = iter2->second;
-                    if (pClose) {
-                        *pClose = closeTrade.filled_avg_price;
-                    }
-                    if (pFill) {
-                        *pFill = closeTrade.filled_qty;
-                    }
-                    if (pProfit) {
-                        *pProfit = (closeTrade.filled_avg_price - order.filled_avg_price) * closeTrade.filled_qty;
+                auto rsp = client->getOrder(s_lastOrder);
+                if (rsp) {
+                    auto& closeOrder = rsp.content();
+                    if (closeOrder.status == "done") {
+                        if (pCost) {
+                            *pCost = closeOrder.fill_fees + order.fill_fees;
+                        }
+                        if (pProfit) {
+                            if (order.side == OrderSide::Buy) {
+                                *pProfit = (closeOrder.executed_value - order.executed_value) - order.fill_fees - closeOrder.fill_fees;
+                            }
+                            else {
+                                *pProfit = (order.executed_value - closeOrder.executed_value) - order.fill_fees - closeOrder.fill_fees;
+                            }
+                        }
                     }
                 }
-                return nTradeID;
             }
-            return 0;
+            s_lastOrder = order.id;
+            return nTradeID;
         }
         else {
-            // close working order?
-            BrokerError(("Close working order " + std::to_string(nTradeID)).c_str());
-            if (std::abs(nAmount) == order.qty) {
-                auto response = client->cancelOrder(iter->second.id);
-                if (response) {
-                    return nTradeID;
+            BrokerError(("Close working order " + order.id).c_str());
+            if (order.filled_size) {
+                auto closeTradeId = BrokerBuy2((char*)order.product_id.c_str(), order.side == OrderSide::Buy ? -order.filled_size : order.filled_size, 0, Limit, pClose, pFill);
+                if (closeTradeId != -1) {
+                    auto rsp = client->getOrder(s_lastOrder);
+                    if (rsp) {
+                        auto& closeOrder = rsp.content();
+                        if (closeOrder.status == "done") {
+                            if (pCost) {
+                                *pCost = closeOrder.fill_fees + order.fill_fees;
+                            }
+                            if (pProfit) {
+                                if (order.side == OrderSide::Buy) {
+                                    *pProfit = (closeOrder.executed_value - order.executed_value) - order.fill_fees - closeOrder.fill_fees;
+                                }
+                                else {
+                                    *pProfit = (order.executed_value - closeOrder.executed_value) - order.fill_fees - closeOrder.fill_fees;
+                                }
+                            }
+                        }
+                    }
                 }
-                BrokerError(("Failed to close trade " + std::to_string(nTradeID) + " " + response.what()).c_str());
+                s_lastOrder = order.id;
+            }
+            auto diff = order.size - (std::abs(nAmount) - order.filled_size);
+            assert(diff >= 0);
+            auto response = client->cancelOrder(order.id);
+            if (!response) {
+                BrokerError(("Failed to close trade " + order.id + " " + response.what()).c_str());
                 return 0;
             }
-            else {
-                auto response = client->replaceOrder(order.id, iter->second.qty - nAmount, order.tif, (Limit ? std::to_string(Limit) : ""), "", iter->second.client_order_id);
-                if (response) {
-                    auto& replacedOrder = response.content();
-                    uint32_t orderId = replacedOrder.internal_id;
-                    s_mapOrderByClientOrderId.emplace(orderId, std::move(replacedOrder));
-                    return orderId;
+
+            if (diff > 0) {
+                auto newOrderId = BrokerBuy2((char*)order.product_id.c_str(), order.side == OrderSide::Buy ? diff : -diff, 0, Limit, nullptr, nullptr);
+                if (newOrderId != -1) {
+                    return -1;
                 }
-                BrokerError(("Failed to modify trade " + std::to_string(nTradeID) + " " + response.what()).c_str());
+                BrokerError(("Failed to replace trade " + response.what()).c_str());
                 return 0;
             }
         }
+        return 0;
     }
 
-    int32_t getPosition(const std::string& asset) {
-        auto response = client->getPosition(asset);
+    int32_t getPosition(const std::string& currency) {
+        if (currency.find("-") != std::string::npos) {
+            BrokerError("Invalid currenty. GET_POSITON command take a currency not an Asset");
+            return 0;
+        }
+        auto response = client->getAccounts();
         if (!response) {
-            if (response.getCode() == 40410000) {
-                // no open position
-                return 0;
-            }
+            for (auto& account : response.content()) {
+                if (account.currency != currency) {
+                    continue;
+                }
 
-            BrokerError(("Get position failed. " + response.what()).c_str());
+                return account.available;
+            }
+            BrokerError(("Invalid currenty " + currency).c_str());
             return 0;
         }
 
-        return response.content().qty;
+        return 0;
     }
 
     constexpr int tifToZorroOrderType(TimeInForce tif) noexcept {
-        constexpr const int converter[] = {0, 2, 0, 0, 1, 0};
+        constexpr const int converter[] = {2, 0, 0, 1};
         assert(tif >= 0 && tif < sizeof(converter) / sizeof(int));
         return converter[tif];
     }
@@ -466,17 +449,17 @@ namespace gdax
             if (!isnan(ticker.ask) && !isnan(ticker.bid)) {
                 fprintf(f, "%s,%.8f,%.8f,0.0,0.0,%.8f,%.8f,0.0,1,%.8f,0.000,%s\n",
                     prod.display_name.c_str(), ticker.ask, (ticker.ask - ticker.bid), prod.quote_increment,
-                    prod.quote_increment, prod.base_increment, prod.id.c_str());
+                    prod.quote_increment, prod.base_min_size, prod.id.c_str());
             }
             else if (!isnan(ticker.ask)) {
                 fprintf(f, "%s,%.8f,NAN,0.0,0.0,%.8f,%.8f,0.0,1,%.8f,0.000,%s\n",
                     prod.display_name.c_str(), ticker.ask, prod.quote_increment,
-                    prod.quote_increment, prod.base_increment, prod.id.c_str());
+                    prod.quote_increment, prod.base_min_size, prod.id.c_str());
             }
             else {
                 fprintf(f, "%s,NAN,NAN,0.0,0.0,%.8f,%.8f,0.0,1,%.8f,0.000,%s\n",
                     prod.display_name.c_str(), prod.quote_increment,
-                    prod.quote_increment, prod.base_increment, prod.id.c_str());
+                    prod.quote_increment, prod.base_min_size, prod.id.c_str());
             }
         };
 
@@ -491,7 +474,12 @@ namespace gdax
             char* token = strtok_s(symbols, delim, &next_token);
             const auto& products = client->getProducts();
             while (token != nullptr) {
-                auto it = products.find(token);
+                std::string s(token);
+                auto pos = s.find("/");
+                if (pos != std::string::npos) {
+                    s[pos] = '-';
+                }
+                auto it = products.find(s);
                 if (it != products.end()) {
                     writeProduct(it->second);
                 }
@@ -522,24 +510,30 @@ namespace gdax
         //case GET_BROKERZONE:
             //return ET; // for now since Alpaca only support US
 
+        case GET_UUID:
+            strncpy((char*)dwParameter, s_lastOrder.c_str(), s_lastOrder.size() + 1);
+            return dwParameter;
+
+        case SET_UUID:
+            s_lastOrder = (char*)dwParameter;
+            return dwParameter;
+
+        case SET_AMOUNT:
+            break;
+
         case GET_MAXTICKS:
             return 300;
 
         case GET_MAXREQUESTS:
-            // private api rate limit is 5/sec, private api rate limit is 3/sec
+            // private api rate limit is 5/sec, public api rate limit is 3/sec
             // throttler will guard the request
-            return 5;
+            return 3;
 
         case GET_LOCK:
-            return -1;
+            return 1;
 
         case GET_POSITION:
             return getPosition((char*)dwParameter);
-
-        case SET_ORDERTEXT:
-            s_nextOrderText = (char*)dwParameter;
-            client->logger().logDebug("SET_ORDERTEXT: %s\n", s_nextOrderText.c_str());
-            return dwParameter;
 
         case SET_SYMBOL:
             s_asset = (char*)dwParameter;
@@ -550,27 +544,17 @@ namespace gdax
             return 1;
 
         case SET_ORDERTYPE: {
-           
             switch ((int)dwParameter) {
             case 0:
                 return 0;
             case 1:
-                s_tif = TimeInForce::IOC;
+                s_tif = TimeInForce::FOK;
                 break;
             case 2:
                 s_tif = TimeInForce::GTC;
                 break;
             case 3:
-                s_tif = TimeInForce::FOK;
-                break;
-            case 4:
-                s_tif = TimeInForce::Day;
-                break;
-            case 5:
-                s_tif = TimeInForce::OPG;
-                break;
-            case 6:
-                s_tif = TimeInForce::CLS;
+                s_tif = TimeInForce::IOC;
                 break;
             }
 
@@ -590,6 +574,11 @@ namespace gdax
             s_logger->logDebug("SET_PRICETYPE: %d\n", s_priceType);
             return dwParameter;
 
+        case SET_LIMIT:
+            s_limitPrice = (double)dwParameter;
+            s_logger->logDebug("SET_LIMIT: %f\n", (double)dwParameter);
+            return dwParameter;
+
         case GET_VOLTYPE:
           return 0;
 
@@ -603,13 +592,18 @@ namespace gdax
         case GET_BROKERZONE:
         case SET_HWND:
         case GET_CALLBACK:
+        case SET_ORDERTEXT:
             break;
+
+        case 2000: {
+            s_postOnly = (int)dwParameter == 1;
+            break;
+        }
 
         case 2001: {
             downloadAssets((char*)dwParameter);
             break;
         }
-            
 
         default:
             s_logger->logDebug("Unhandled command: %d %lu\n", Command, dwParameter);

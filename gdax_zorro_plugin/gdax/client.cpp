@@ -10,7 +10,6 @@
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
-#include "gdax/client_order_id_generator.h"
 
 #include "cryptopp/cryptlib.h"
 using CryptoPP::Exception;
@@ -39,7 +38,6 @@ namespace {
     constexpr const char* s_APIBaseURLLive = "https://api.pro.coinbase.com";
     /// The base URL for API calls to the paper trading API
     constexpr const char* s_APIBaseURLPaper = "https://api-public.sandbox.pro.coinbase.com";
-    std::unique_ptr<gdax::ClientOrderIdGenerator> s_orderIdGen;
 
     inline uint64_t get_timestamp() {
         auto now = std::chrono::system_clock::now();
@@ -49,6 +47,28 @@ namespace {
     inline uint64_t nonce() {
         static const uint64_t base = 1613437804467;
         return get_timestamp() - base;
+    }
+
+    inline double to_num_contracts(double lots, double qty_multiplier) {
+        return ((lots / qty_multiplier) + 1e-11) * lots;
+    }
+
+    constexpr double epsilon = 1e-9;
+    constexpr uint64_t default_norm_factor = 1e8;
+
+    inline static double fix_floating_error(double value, int32_t norm_factor = default_norm_factor) {
+        auto v = value + epsilon;
+        return ((double)((int64_t)(v * norm_factor)) / norm_factor);
+    }
+
+    inline static uint32_t compute_number_decimals(double value) {
+        value = std::abs(fix_floating_error(value));
+        uint32_t count = 0;
+        while (value - std::floor(value) > epsilon) {
+            ++count;
+            value *= 10;
+        }
+        return count;
     }
 }
 
@@ -61,11 +81,12 @@ namespace gdax {
         return buf;
     }
 
-    Client::Client(std::string key, std::string passphrase, std::string secret, bool isPaperTrading)
+    Client::Client(const std::string& key, const std::string& passphrase, const std::string& secret, bool isPaperTrading, const std::string& stp)
         : baseUrl_(isPaperTrading ? s_APIBaseURLPaper : s_APIBaseURLLive)
+        , stp_(stp)
         , constant_headers_(
-            "Content-Type:application/json\nUser-Agent:Zorro/2.3\nCB-ACCESS-KEY:" + std::move(key) + 
-            "\nCB-ACCESS-PASSPHRASE:" + std::move(passphrase))
+            "Content-Type:application/json\nUser-Agent:Zorro\nCB-ACCESS-KEY:" + key + 
+            "\nCB-ACCESS-PASSPHRASE:" + passphrase)
         , public_api_headers_("User-Agent:Zorro")
         , isLiveMode_(!isPaperTrading)
     {
@@ -76,7 +97,6 @@ namespace gdax {
             BrokerError(("failed to decode API secret. err=" + std::string(e.what())).c_str());
             throw std::runtime_error(e.what());
         }
-        //s_orderIdGen = std::make_unique<ClientOrderIdGenerator>(*this);
     }
 
     bool Client::sign(
@@ -117,11 +137,11 @@ namespace gdax {
         return Response<std::vector<Account>>(1, "Failed to sign /accounts request");
     }
 
-    const std::unordered_map<std::string, Product>& Client::getProducts() const {
+    const std::unordered_map<std::string, Product>& Client::getProducts() {
         if (!products_.empty()) {
             return products_;
         }
-        auto response =  request<std::vector<Product>>(baseUrl_ + "/products", public_api_headers_.c_str(), nullptr, &logger_);
+        auto response =  request<std::vector<Product>>(baseUrl_ + "/products", public_api_headers_.c_str(), nullptr, &logger_, LogFilter::LF_PRODUCTS);
         if (!response) {
             BrokerError(("Failed to get products. err=" + response.what()).c_str());
         }
@@ -133,12 +153,21 @@ namespace gdax {
         return products_;
     }
 
+    const Product* Client::getProduct(const char* asset) {
+        auto& products = getProducts();
+        auto it = products.find(asset);
+        if (it != products.end()) {
+            return &it->second;
+        }
+        return nullptr;
+    }
+
     Response<Ticker> Client::getTicker(const std::string& id) const {
-        return request<Ticker>(baseUrl_ + "/products/" + id + "/ticker", public_api_headers_.c_str(), nullptr, &logger_);
+        return request<Ticker>(baseUrl_ + "/products/" + id + "/ticker", public_api_headers_.c_str(), nullptr, &logger_, LogFilter::LF_TICKER);
     }
 
     Response<Time> Client::getTime() const {
-        return request<Time>(baseUrl_ + "/time", public_api_headers_.c_str(), nullptr, &logger_);
+        return request<Time>(baseUrl_ + "/time", public_api_headers_.c_str(), nullptr, &logger_, LogFilter::LF_TIME);
     }
 
     Response<Candles> Client::getCandles(const std::string& AssetId, uint32_t start, uint32_t end, uint32_t granularity, uint32_t nCandles) const {
@@ -167,10 +196,40 @@ namespace gdax {
             }
         }
 
-        // make sure only 300 candles requests
         uint32_t s;
         uint32_t e = end;
         nCandles *= n;
+
+        auto download_candles = [this, &s, e, supported_granularity, AssetId, start]() {
+            // make sure only 300 candles requests
+            s = e - 300 * supported_granularity;
+            if (s < start) {
+                s = start;
+            }
+
+            std::stringstream ss;
+            ss << baseUrl_ << "/products/" << AssetId << "/candles?start=" << timeToString(time_t(s)) << "&end=" << timeToString(time_t(e)) << "&granularity=" << supported_granularity;
+
+            return request<Candles>(ss.str(), public_api_headers_.c_str(), nullptr, &logger_, LogFilter::LF_CANDLE);
+        };
+
+        if (n == 1) {
+            auto rsp = download_candles();
+            if (!rsp) {
+                return rsp;
+            }
+
+            auto& downloadedCandles = rsp.content().candles;
+            for (auto it = downloadedCandles.begin(); it != downloadedCandles.end();) {
+                if (it->time > e || it->time < s) {
+                    it = downloadedCandles.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+            return rsp;
+        }
 
         Response<Candles> rt;
         auto& candles = rt.content().candles;
@@ -179,55 +238,41 @@ namespace gdax {
         Candle c;
 
         do {
-            s = e - 300 * granularity;
-            if (s < start) {
-                s = start;
-            }
-
-            std::stringstream ss;
-            ss << baseUrl_ << "/products/" << AssetId << "/candles?start=" << timeToString(time_t(s)) << "&end=" << timeToString(time_t(e)) << "&granularity" << supported_granularity;
-
-            auto rsp = request<Candles>(ss.str(), public_api_headers_.c_str(), nullptr, &logger_);
+            auto rsp = download_candles();
             if (!rsp) {
                 BrokerError(rsp.what().c_str());
                 break;
             }
-
             auto& downloadedCandles = rsp.content().candles;
-            auto it = downloadedCandles.begin();
-            while (it != downloadedCandles.end()) {
-                auto& candle = downloadedCandles.front();
+            for (size_t i = 0; i < downloadedCandles.size(); ++i) {
+                auto& candle = downloadedCandles[i];
                 e = candle.time;
                 if (candle.time > e) {
-                    it = downloadedCandles.erase(it);
                     continue;
                 }
                 if (candle.time < s) {
                     break;
                 }
-                
-                if (n > 1) {
-                    if (i == 0) {
-                        c = candle;
-                    }
-                    else {
-                        c.high = std::max<double>(candle.high, c.high);
-                        c.low = std::min<double>(candle.low, c.low);
-                        c.close = candle.close;
-                        c.volume = candle.volume;
-                    }
-                    
-                    if (++i = n) {
-                        candles.emplace_back(std::move(c));
-                        i = 0;
-                        --nCandles;
-                    }
+
+                if (i == 0) {
+                    c = candle;
                 }
                 else {
-                    candles.emplace_back(candle);
+                    c.high = std::max<double>(candle.high, c.high);
+                    c.low = std::min<double>(candle.low, c.low);
+                    c.close = candle.close;
+                    c.volume += candle.volume;
+                }
+
+                if (++i == n) {
+                    candles.emplace_back(std::move(c));
+                    i = 0;
                     --nCandles;
                 }
-                it = downloadedCandles.erase(it);
+
+                if (!nCandles) {
+                    return rt;
+                }
             }
             e -= 30;
         } while (nCandles > 0 && s > start);
@@ -240,96 +285,69 @@ namespace gdax {
     //    return request<std::vector<Trade>>(url.str(), nullptr);
     //}
 
-    Response<std::vector<Order>> Client::getOrders(
-        ActionStatus status,
-        int limit,
-        const std::string& after,
-        const std::string& until,
-        OrderDirection direction,
-        bool nested) const {
-        std::vector<std::string> queries;
-        if (status != ActionStatus::Open) {
-            queries.emplace_back("status=" + std::string(to_string(status)));
+    Response<std::vector<Order>> Client::getOrders() const {
+
+        std::string timestamp;
+        std::string signature;
+        if (sign("GET", "/orders?status=all", "", timestamp, signature)) {
+            return request<std::vector<Order>>(baseUrl_ + "/orders?status=all", headers(signature, timestamp).c_str(), nullptr, &logger_, LogFilter::LF_ORDERS);
         }
-        if (limit != 50) {
-            queries.emplace_back("limit=" + std::to_string(limit));
-        }
-        if (!after.empty()) {
-            queries.emplace_back("after=" + after);
-        }
-        if (!until.empty()) {
-            queries.emplace_back("until=" + until);
-        }
-        if (direction != OrderDirection::Descending) {
-            queries.emplace_back("direction=" + std::string(to_string(direction)));
-        }
-        if (nested) {
-            queries.emplace_back("nested=1");
+        return Response<std::vector<Order>>(1, "Failed to sign /orders request");
+    }
+
+    Response<Order> Client::getOrder(const std::string& id) {
+        auto it = filled_orders_.find(id);
+        if (it != filled_orders_.end()) {
+            Response<Order> response;
+            response.content() = it->second;
+            return response;
         }
 
-        std::stringstream url;
-        url << baseUrl_ << "/v2/orders";
-        if (!queries.empty()) {
-            url << "?";
-            int32_t i = 0;
-            for (; i < (int32_t)queries.size() - 1; ++i) {
-                url << queries[i] << '&';
+        std::string timestamp;
+        std::string signature;
+        std::string path = "/orders/" + id;
+        if (sign("GET", path, "", timestamp, signature)) {
+            auto response = request<Order>(baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, &logger_, LogFilter::LF_ORDER);
+            if (response && response.content().status == "done") {
+                filled_orders_.emplace(id, response.content());
             }
-            url << queries[i];
+            return response;
         }
-        logger_.logDebug("--> %s\n", url.str().c_str());
-        return request<std::vector<Order>>(url.str());
+        return Response<Order>(1, "Failed to sign /orders/" + id + " request");
     }
 
-    Response<Order> Client::getOrder(const std::string& id, const bool nested, const bool logResponse) const {
-        auto url = baseUrl_ + "/v2/orders/" + id;
-        if (nested) {
-            url += "?nested=true";
+    Response<Fill> Client::getFill(const std::string& id) const {
+        std::string timestamp;
+        std::string signature;
+        std::string path = "/fills?order_id=" + id;
+        if (sign("GET", path, "", timestamp, signature)) {
+            return request<Fill>(baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, &logger_, LogFilter::LF_FILL);
         }
-
-        Response<Order> response;
-        if (logResponse) {
-            return request<Order>(url, nullptr, nullptr, &logger_);
-        }
-        return request<Order>(url);
-    }
-
-    Response<Order> Client::getOrderByClientOrderId(const std::string& clientOrderId) const {
-        return request<Order>(baseUrl_ + "/v2/orders:by_client_order_id?client_order_id=" + clientOrderId);
+        return Response<Fill>(1, "Failed to sign /fills?order_id=" + id + " request");
     }
 
     Response<Order> Client::submitOrder(
-        const std::string& symbol,
-        const int quantity,
+        const Product* product,
+        const int lots,
         const OrderSide side,
         const OrderType type,
         const TimeInForce tif,
-        const std::string& limit_price,
-        const std::string& stop_price,
-        bool extended_hours,
-        const std::string& client_order_id,
-        const OrderClass order_class,
-        TakeProfitParams* take_profit_params,
-        StopLossParams* stop_loss_params) const {
-        
-        if (!is_open_ && !extended_hours) {
-            return Response<Order>(1, "Market Close.");
-        }
+        double limit_price,
+        double stop_price,
+        bool post_only) {
 
         Response<Order> response;
         int32_t internalOrderId;
         int retry = 1;
+        auto start = std::time(nullptr);
         do {
             rapidjson::StringBuffer s;
             s.Clear();
             rapidjson::Writer<rapidjson::StringBuffer> writer(s);
             writer.StartObject();
 
-            writer.Key("symbol");
-            writer.String(symbol.c_str());
-
-            writer.Key("qty");
-            writer.Int(quantity);
+            writer.Key("product_id");
+            writer.String(product->id.c_str());
 
             writer.Key("side");
             writer.String(to_string(side));
@@ -337,152 +355,71 @@ namespace gdax {
             writer.Key("type");
             writer.String(to_string(type));
 
-            writer.Key("time_in_force");
-            writer.String(to_string(tif));
-
-            if (!limit_price.empty()) {
-                writer.Key("limit_price");
-                writer.String(limit_price.c_str());
+            if (!stp_.empty()) {
+                writer.Key("stp");
+                writer.String(stp_.c_str());
             }
 
-            if (!stop_price.empty()) {
-                writer.Key("stop_price");
-                writer.String(stop_price.c_str());
-            }
+            std::ostringstream qty;
+            qty.precision(compute_number_decimals(product->base_increment));
+            qty << std::fixed << lots * product->base_min_size;
 
-            if (extended_hours) {
-                writer.Key("extended_hours");
-                writer.Bool(extended_hours);
-            }
+            if (type == OrderType::Limit) {
+                writer.Key("time_in_force");
+                writer.String(to_string(tif));
 
-            internalOrderId = s_orderIdGen->nextOrderId();
-            std::stringstream clientOrderId;
-            clientOrderId << "ZORRO_";
-            if (!client_order_id.empty()) {
-                if (client_order_id.size() > 32) {  // Alpaca client order id max length is 48
-                    clientOrderId << client_order_id.substr(0, 32);
-                }
-                else {
-                    clientOrderId << client_order_id;
-                }
-                clientOrderId << "_";
-            }
+                writer.Key("price");
+                writer.String(std::to_string(limit_price).c_str());
 
-            clientOrderId << internalOrderId;
-            writer.Key("client_order_id");
-            writer.String(clientOrderId.str().c_str());
-
-            if (order_class != OrderClass::Simple) {
-                writer.Key("order_class");
-                writer.String(to_string(order_class));
-            }
-
-            if (take_profit_params != nullptr) {
-                writer.Key("take_profit");
-                writer.StartObject();
-                if (take_profit_params->limitPrice != "") {
-                    writer.Key("limit_price");
-                    writer.String(take_profit_params->limitPrice.c_str());
-                }
-                writer.EndObject();
-            }
-
-            if (stop_loss_params != nullptr) {
-                writer.Key("stop_loss");
-                writer.StartObject();
-                if (!stop_loss_params->limitPrice.empty()) {
-                    writer.Key("limit_price");
-                    writer.String(stop_loss_params->limitPrice.c_str());
-                }
-                if (!stop_loss_params->stopPrice.empty()) {
+                if (stop_price) {
                     writer.Key("stop_price");
-                    writer.String(stop_loss_params->stopPrice.c_str());
+                    writer.String(std::to_string(stop_price).c_str());
                 }
-                writer.EndObject();
             }
+
+            writer.Key("size");
+            writer.String(qty.str().c_str());
 
             writer.EndObject();
             auto data = s.GetString();
 
-            logger_.logDebug("--> POST %s/v2/orders\n", baseUrl_.c_str());
-            if (data) {
-                logger_.logTrace("Data:\n%s\n", data);
-            }
-            response = request<Order>(baseUrl_ + "/v2/orders", data, nullptr, &logger_);
-            if (!response && response.what() == "client_order_id must be unique") {
-                // clinet order id has been used.
-                // increment conflict count and try again.
-                s_orderIdGen->onIdConflict();
-            }
-        } while (!response && retry--);
+            logger_.logTrace("SubmitOrder:\n%s\n", data);
 
-        assert(!response || response.content().internal_id == internalOrderId);
+            std::string timestamp;
+            std::string signature;
+            if (sign("POST", "/orders", data, timestamp, signature)) {
+                response = request<Order>(baseUrl_ + "/orders", headers(signature, timestamp).c_str(), data, &logger_, LogFilter::LF_ORDER);
+                if (response) {
+                    Order* order = &response.content();
+                    while (order->status == "pending") {
+                        response = getOrder(order->id);
+                        if (!response) {
+                            break;
+                        }
+                        if (std::difftime(std::time(nullptr), start) >= 30) {
+                            return Response<Order>(-2, "Order response timedout");
+                        }
+                        order = &response.content();
+                    }
+                    return response;
+                }
+            }
+            else {
+                response.onError(1, "Failed to sign order request");
+                break;
+            }            
+        } while (!response && retry--);
         return response;
     }
 
-    Response<Order> Client::replaceOrder(
-        const std::string& id,
-        const int quantity,
-        const TimeInForce tif,
-        const std::string& limit_price,
-        const std::string& stop_price,
-        const std::string& client_order_id) const {
-
-        rapidjson::StringBuffer s;
-        s.Clear();
-        rapidjson::Writer<rapidjson::StringBuffer> writer(s);
-        writer.StartObject();
-
-        writer.Key("qty");
-        writer.String(std::to_string(quantity).c_str());
-
-        writer.Key("time_in_force");
-        writer.String(to_string(tif));
-
-        if (limit_price != "") {
-            writer.Key("limit_price");
-            writer.String(limit_price.c_str());
-        }
-
-        if (stop_price != "") {
-            writer.Key("stop_price");
-            writer.String(stop_price.c_str());
-        }
-
-        auto internalOrderId = s_orderIdGen->nextOrderId();
-        std::stringstream clientOrderId;
-        clientOrderId << "ZORRO_";
-        if (!client_order_id.empty()) {
-            if (client_order_id.size() > 32) {  // Alpaca client order id max length is 48
-                clientOrderId << client_order_id.substr(0, 32);
-            }
-            else {
-                clientOrderId << client_order_id;
-            }
-            clientOrderId << "_";
-        }
-
-        clientOrderId << internalOrderId;
-        writer.Key("client_order_id");
-        writer.String(clientOrderId.str().c_str());
-
-        writer.EndObject();
-        std::string body("#PATCH ");
-        body.append(s.GetString());
-
-        logger_.logDebug("--> %s/v2/orders/%s\n", baseUrl_.c_str(), id.c_str());
-        logger_.logTrace("Data:\n%s\n", body.c_str());
-        return request<Order>(baseUrl_ + "/v2/orders/" + id, body.c_str(), nullptr, &logger_);
-    }
-
-    Response<Order> Client::cancelOrder(const std::string& id) const {
+    Response<Order> Client::cancelOrder(const std::string& id) {
         logger_.logDebug("--> DELETE %s/v2/orders/%s\n", baseUrl_.c_str(), id.c_str());
-        auto response = request<Order>(baseUrl_ + "/v2/orders/" + id, "#DELETE", nullptr, &logger_);
+        auto response = request<Order>(baseUrl_ + "/v2/orders/" + id, "#DELETE", nullptr, &logger_, LogFilter::LF_ORDER);
         if (!response) {
             // Alpaca cancelOrder not return a object
             Order* order;
             do {
-                auto resp = getOrder(id, false, true);
+                auto resp = getOrder(id);
                 if (resp) {
                     order = &resp.content();
                     if (order->status == "canceled" || order->status == "filled") {
@@ -496,7 +433,4 @@ namespace gdax {
         return response;
     }
 
-    Response<Position> Client::getPosition(const std::string& symbol) const {
-        return request<Position>(baseUrl_ + "/v2/positions/" + symbol, nullptr, nullptr, &logger_);
-    }
 } // namespace gdax

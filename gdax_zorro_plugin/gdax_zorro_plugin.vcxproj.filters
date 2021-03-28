@@ -27,9 +27,6 @@
     <ClInclude Include="request.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="market_data\quote.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="logger.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -37,9 +34,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="gdax\client.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="gdax\client_order_id_generator.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="gdax_zorro_plugin.h">
@@ -51,16 +45,10 @@
     <ClInclude Include="gdax\order.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="gdax\position.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="gdax\ringbuffer.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="gdax\ticker.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="gdax\trade.h">
+    <ClInclude Include="gdax\fill.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="gdax\product.h">
@@ -73,6 +61,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="market_data\candle.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="gdax\websocket.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -89,5 +80,10 @@
     <ClCompile Include="gdax_zorro_plugin.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\README.md" />
+    <None Include="..\CHANGELOG" />
+    <None Include="..\BUILD.md" />
   </ItemGroup>
 </Project>

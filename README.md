@@ -1,18 +1,16 @@
-# AlpacaZorroPlugin
+# GdaxZorroPlugin
 
-**[Alpaca](http://alpaca.markets)** is a moden commision-free brokrage for algorithmic trading. Alpaca API allows a trading algo to access real-time price, place orders and manage potofolio through either REST or streaming.
-
-**AlpacaZorroPlugin** is a plugin for **[Zorro](https://zorro-project.com/)**, an institutional-grade development tool fro financial research and automatic traiding system.
+**GdaxZorroPlugin** is a plugin for **[Zorro](https://zorro-project.com/)**, an institutional-grade development tool fro financial research and automatic traiding system. It provides connectivity to [Coinbase Pro](https://pro.coinbase.com/) cryptocurriency exchange.
 
 ## Install
 
-To install the plugin, download the [latest release](https://github.com/kzhdev/alpaca_zorro_plugin/releases/download/v0.2.3/AlpacaZorroPlugin_v0.2.4.zip) and place the Alpaca.dll file into the **Plugin** folder under Zorro's root path.
+To install the plugin, download the [latest release](https://github.com/kzhdev/gdax_zorro_plugin/releases/download/v0.0.1/GdaxZorroPlugin_v0.0.1.zip) and place the Gdax.dll file into the **Plugin** folder under Zorro's root path.
 
 ## How to Use
 
-* First generate a API Key in Alpaca website.
-* In Zorro, select Alpaca.
-* Enter the **API Key** in the **User ID** input box
+* First generate a API Key in [Coinbase Pro](https://pro.coinbase.com/) website.
+* In Zorro, select Gdax.
+* Enter the **API Key_Passphrase** in the **User ID** input box
 * Enter the **Secret Key** in the **Password** input box.
 
 ## Features
@@ -29,28 +27,21 @@ To install the plugin, download the [latest release](https://github.com/kzhdev/a
   enterLong(5);   // place 5 lot at 100.00
   ```
 
-* Support **FOK**, **IOC**, **GTC**, **DAY**, **OPG**, **CLS** TimeInForce types. See [Understand Orders](https://alpaca.markets/docs/trading-on-alpaca/orders/#time-in-force) for more info.
+* Support **FOK**, **IOC**, **GTC**, TimeInForce types.
 
   ```C++
-  // By default, enterLong/enterShort places an order with FOK TimeInfoForce type
+  // By default, limit order has FOK TimeInfoForce type
   // Use borkerCommand(SET_ORDERTYPE, tif) to change TimeInForce.
   // Valid TimeInForce value is
-  //  1 - ICO
+  //  1 - FOK
   //  2 - GTC
-  //  3 - FOK (default)
-  //  4 - DAY
-  //  5 - OPG
-  //  6 - CLS
+  //  3 - IOC
   //
   // NOTE: brokemand(SET_ORDERTYPE, 0) will be ignored, this is because Zorro always call brokerCommand(SET_ORDERTYPE, 0) before setting limit price.
 
-  brokerCommand(SET_ORDERTYPE, 4);  // set TIF to Day
+  brokerCommand(SET_ORDERTYPE, 2);  // set TIF to GTC
   OrderLimit = 100.00;
-  enterShort(5);    // Sell 5 lot Day order at limit price 100.00
-
-  OrderLimit = 0;   // set order type back to Market
-  brokerCommand(SET_ORDERTYPE, 6);  // set TIF to CLS
-  enteryLong(5);    // Buy 5 lot MarketOnClose order
+  enterShort(5);    // Sell 5 lot GTC order at limit price 100.00
   ```
 
 * Support LastQuote/LastTrade price type
@@ -62,29 +53,19 @@ To install the plugin, download the [latest release](https://github.com/kzhdev/a
   brokerCommand(SET_PRICETYPE, 1 /*or 0*/) // Set price type to ask/bid quote
   ```
 
-* Support custom order text
+* Support Position(Balance) retrieval
 
   ```C++
-  // Use borkderCommand(SET_ORDERTEXT, xxxx) to set a custom order text
-  brokerCommand(SET_ORDERTEXT, "MyAlpacaOrder");  // "MyAlpacaOrder" will be added into ClientOrderId
-  enterLong(5);
+  // get balance for specific currency
+  brokerCommand(GET_POSITION, "BTC");
   ```
 
-* Support Position retrieval
+* Set PostOnly limit order flag through custom brokerCommand
 
-  ```C++
-  // get position for specific Asset
-  brokerCommand(GET_POSITION, "AAPL");
+  ``` C++
+  // set PostOnly to true
+  brokerCommand(2000, true);
   ```
-
-* Support [Polygon](https://polygon.io) market data (need live account)
-
-  All Alpaca customers with live brokerage accounts can access various kinds of market data provided by Polygon. By default, the plugin uses Alpaca market data.
-  
-  **To Use Polygon:**
-  In the User input, add '_' and live account API Key behined the AlpacaAPI key, like following: **\<PaperAccountAPIKey or LiveAccountAPIKey>\_\<LiveAccountAPIKey>**
-
-  **brokerCommand(2000, int usePolygon)** can also be used to switch the data source. When usePolygon = **0**, Alpaca market data will be used. Othersise, Polygon market data will be used. Zorro retrieves historical data right after logged in. User needs aware that after switching market data source, the history data and live data are came from different source.
 
 * Generate AssetList file through custom borkerCommand
   
@@ -93,13 +74,13 @@ To install the plugin, download the [latest release](https://github.com/kzhdev/a
   ```
 
   **symbols** - One or more symbols separated by comma. If symbols = **0**, all symbols will be included.
-  An AssetAlpaca.csv file will be generated in the Log diredtory.
+  An AssetCoinbasePro.csv file will be generated in the Log diredtory.
 
   ``` C++
   Exemple:
   // GenerateAlpacaAssetList.c
   function main() {
-    brokerCommand(2001, "SPY,AAPL,MSFT,TSLA");  // Generate AssetsAlpaca.csv contains SPY, AAPL, MSFT, TSLA symbols
+    brokerCommand(2001, "BTC-USD,ETH-USD");  // Generate AssetsAlpaca.csv contains BTC-USD, ETH-USD symbols
   }
   ```
 
@@ -111,7 +92,6 @@ To install the plugin, download the [latest release](https://github.com/kzhdev/a
   * BrokerTime
   * BrokerAsset
   * BrokerHistory2
-    * Alpaca only support M1, M5, M15 and D1 bars.
   * BrokerBuy2
   * BrokerTrade
   * BrokerSell2
@@ -122,16 +102,18 @@ To install the plugin, download the [latest release](https://github.com/kzhdev/a
     * GET_LOCK
     * GET_POSITION
     * GET_PRICETYPE
-    * GET_VOLTYPE
-    * SET_ORDERTEXT
+    * GET_UUID
     * SET_SYMBOL
     * SET_ORDERTYPE
-    * SET_PRICETYPE:
-    * SET_DIAGNOSTICS:
+    * SET_PRICETYPE
+    * SET_DIAGNOSTICS
+    * SET_UUID
 
-## TO-DO List
+## Caveat
+Zorro not saving orders' UUID. After restarting, Zorro uses an integer to retrieve a trade, the plugin can't map the integer to a Gdax order.
 
-* Add target and stop order support
-* Add streaming support to lower number of API requests. There is an issue where Alpaca currently support only 1 websocket per account. For multiple Zorro-S intances to work, AlpacaProxyAgent needs to be used.
+## [Build From Source](BUILD.md)
 
-## [To Contribute](CONTRIBUTING.md)
+## Bug Report
+
+If you find any issue or have any suggestion, please report in GitHub [issues](https://github.com/kzhdev/gdax_zorro_plugin/issues).

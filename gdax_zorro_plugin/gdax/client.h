@@ -9,11 +9,9 @@
 #include "gdax/account.h"
 #include "gdax/product.h"
 #include "market_data/candle.h"
-#include "market_data/quote.h"
 #include "gdax/order.h"
-#include "gdax/position.h"
 #include "gdax/ticker.h"
-#include "gdax/trade.h"
+#include "gdax/fill.h"
 #include "gdax/time.h"
 
 namespace gdax {
@@ -25,7 +23,7 @@ namespace gdax {
     class Client final {
     public:
         explicit Client() = delete;
-        explicit Client(std::string key, std::string passphrase, std::string secret, bool isPaperTrading);
+        explicit Client(const std::string& key, const std::string& passphrase, const std::string& secret, bool isPaperTrading, const std::string& stp = "");
         ~Client() = default;
 
         Logger& logger() noexcept { return logger_;  }
@@ -34,7 +32,9 @@ namespace gdax {
 
         Response<std::vector<Account>> getAccounts() const;
 
-        const std::unordered_map<std::string, Product>& getProducts() const;
+        const std::unordered_map<std::string, Product>& getProducts();
+        const Product* getProduct(const char* asset);
+
         Response<Ticker> getTicker(const std::string& id) const;
 
         Response<Time> getTime() const;
@@ -42,42 +42,23 @@ namespace gdax {
         Response<Candles> getCandles(const std::string& AssetId, uint32_t start, uint32_t end, uint32_t granulairty, uint32_t nCandles) const;
         //Response<std::vector<Trade>> getTrades(const std::string& AssetId) const;
             
-        Response<std::vector<Order>> getOrders(
-            const ActionStatus status = ActionStatus::Open,
-            const int limit = 50,
-            const std::string& after = "",
-            const std::string& until = "",
-            const OrderDirection = OrderDirection::Descending,
-            const bool nested = false) const;
+        Response<std::vector<Order>> getOrders() const;
 
-        Response<Order> getOrder(const std::string& id, const bool nested = false, const bool logResponse = false) const;
-        Response<Order> getOrderByClientOrderId(const std::string& clientOrderId) const;
+        Response<Order> getOrder(const std::string& id);
 
         Response<Order> submitOrder(
-            const std::string& symbol,
-            const int quantity,
+            const Product* product,
+            const int lots,
             const OrderSide side,
             const OrderType type,
             const TimeInForce tif,
-            const std::string& limit_price = "",
-            const std::string& stop_price = "",
-            bool extended_hours = false,
-            const std::string& client_order_id = "",
-            const OrderClass order_class = OrderClass::Simple,
-            TakeProfitParams* take_profit_params = nullptr,
-            StopLossParams* stop_loss_params = nullptr) const;
+            double limit_price = 0.0,
+            double stop_price = 0.0,
+            bool post_only = false);
 
-        Response<Order> replaceOrder(
-            const std::string& id,
-            const int quantity,
-            const TimeInForce tif,
-            const std::string& limit_price = "",
-            const std::string& stop_price = "",
-            const std::string& client_order_id = "") const;
+        Response<Order> cancelOrder(const std::string& id);
 
-        Response<Order> cancelOrder(const std::string& id) const;
-
-        Response<Position> getPosition(const std::string& symbol) const;
+        Response<Fill> getFill(const std::string& oid) const;
 
     private:
         bool sign(
@@ -91,13 +72,15 @@ namespace gdax {
     private:
         const std::string baseUrl_;
         std::string secret_;
+        std::string stp_;
         const std::string constant_headers_;
         const std::string public_api_headers_;
-        mutable bool is_open_ = false;
+        //mutable bool is_open_ = false;
         const bool isLiveMode_;
         mutable Logger logger_;
 
-        mutable std::unordered_map<std::string, Product> products_;
+        std::unordered_map<std::string, Product> products_;
+        std::unordered_map<std::string, Order> filled_orders_;
     };
 
 } // namespace gdax
