@@ -60,10 +60,13 @@
     <ClInclude Include="gdax\time.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="market_data\candle.h">
+    <ClInclude Include="gdax\websocket.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="gdax\websocket.h">
+    <ClInclude Include="gdax\client_order_id_generator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="gdax\candle.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

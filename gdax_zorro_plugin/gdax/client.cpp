@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "gdax/client.h"
+#include "gdax/client_order_id_generator.h"
 
 #include <sstream>
 #include <memory>
@@ -38,6 +39,8 @@ namespace {
     constexpr const char* s_APIBaseURLLive = "https://api.pro.coinbase.com";
     /// The base URL for API calls to the paper trading API
     constexpr const char* s_APIBaseURLPaper = "https://api-public.sandbox.pro.coinbase.com";
+
+    std::unique_ptr<gdax::ClientOrderIdGenerator> s_orderIdGen;
 
     inline uint64_t get_timestamp() {
         auto now = std::chrono::system_clock::now();
@@ -85,11 +88,12 @@ namespace gdax {
         : baseUrl_(isPaperTrading ? s_APIBaseURLPaper : s_APIBaseURLLive)
         , stp_(stp)
         , constant_headers_(
-            "Content-Type:application/json\nUser-Agent:Zorro\nCB-ACCESS-KEY:" + key + 
+            "Content-Type:application/json\nUser-Agent:Zorro\nCB-ACCESS-KEY:" + key +
             "\nCB-ACCESS-PASSPHRASE:" + passphrase)
         , public_api_headers_("User-Agent:Zorro")
         , isLiveMode_(!isPaperTrading)
     {
+        s_orderIdGen = std::make_unique<ClientOrderIdGenerator>(*this);
         try {
             StringSource(secret, true, new Base64Decoder(new StringSink(secret_)));
         }
@@ -102,9 +106,9 @@ namespace gdax {
     bool Client::sign(
         const char* method,
         const std::string& request_path,
-        const std::string& body,
         std::string& timestamp,
-        std::string& sign) const {
+        std::string& sign,
+        const std::string& body) const {
         try {
             timestamp = std::to_string(get_timestamp());
             std::string msg = timestamp;
@@ -131,8 +135,8 @@ namespace gdax {
     Response<std::vector<Account>> Client::getAccounts() const {
         std::string timestamp;
         std::string signature;
-        if (sign("GET", "/accounts", "", timestamp, signature)) {
-            return request<std::vector<Account>>(baseUrl_ + "/accounts", headers(signature, timestamp).c_str(), nullptr, &logger_);
+        if (sign("GET", "/accounts", timestamp, signature)) {
+            return request<std::vector<Account>>(&logger_, LogFilter::LF_ACCOUNTs, baseUrl_ + "/accounts", headers(signature, timestamp).c_str());
         }
         return Response<std::vector<Account>>(1, "Failed to sign /accounts request");
     }
@@ -141,7 +145,7 @@ namespace gdax {
         if (!products_.empty()) {
             return products_;
         }
-        auto response =  request<std::vector<Product>>(baseUrl_ + "/products", public_api_headers_.c_str(), nullptr, &logger_, LogFilter::LF_PRODUCTS);
+        auto response =  request<std::vector<Product>>(&logger_, LogFilter::LF_PRODUCTS, baseUrl_ + "/products", public_api_headers_.c_str());
         if (!response) {
             BrokerError(("Failed to get products. err=" + response.what()).c_str());
         }
@@ -163,11 +167,11 @@ namespace gdax {
     }
 
     Response<Ticker> Client::getTicker(const std::string& id) const {
-        return request<Ticker>(baseUrl_ + "/products/" + id + "/ticker", public_api_headers_.c_str(), nullptr, &logger_, LogFilter::LF_TICKER);
+        return request<Ticker>(&logger_, LogFilter::LF_TICKER, baseUrl_ + "/products/" + id + "/ticker", public_api_headers_.c_str());
     }
 
     Response<Time> Client::getTime() const {
-        return request<Time>(baseUrl_ + "/time", public_api_headers_.c_str(), nullptr, &logger_, LogFilter::LF_TIME);
+        return request<Time>(&logger_, LogFilter::LF_TIME, baseUrl_ + "/time", public_api_headers_.c_str());
     }
 
     Response<Candles> Client::getCandles(const std::string& AssetId, uint32_t start, uint32_t end, uint32_t granularity, uint32_t nCandles) const {
@@ -210,7 +214,7 @@ namespace gdax {
             std::stringstream ss;
             ss << baseUrl_ << "/products/" << AssetId << "/candles?start=" << timeToString(time_t(s)) << "&end=" << timeToString(time_t(e)) << "&granularity=" << supported_granularity;
 
-            return request<Candles>(ss.str(), public_api_headers_.c_str(), nullptr, &logger_, LogFilter::LF_CANDLE);
+            return request<Candles>(&logger_, LogFilter::LF_CANDLE, ss.str(), public_api_headers_.c_str());
         };
 
         if (n == 1) {
@@ -286,151 +290,194 @@ namespace gdax {
     //}
 
     Response<std::vector<Order>> Client::getOrders() const {
-
         std::string timestamp;
         std::string signature;
-        if (sign("GET", "/orders?status=all", "", timestamp, signature)) {
-            return request<std::vector<Order>>(baseUrl_ + "/orders?status=all", headers(signature, timestamp).c_str(), nullptr, &logger_, LogFilter::LF_ORDERS);
+        if (sign("GET", "/orders?status=all", timestamp, signature)) {
+            return request<std::vector<Order>>(&logger_, LogFilter::LF_ORDERS, baseUrl_ + "/orders?status=all", headers(signature, timestamp).c_str());
         }
         return Response<std::vector<Order>>(1, "Failed to sign /orders request");
     }
 
-    Response<Order> Client::getOrder(const std::string& id) {
-        auto it = filled_orders_.find(id);
-        if (it != filled_orders_.end()) {
-            Response<Order> response;
-            response.content() = it->second;
-            return response;
-        }
+    Response<Order*> Client::getOrder(int32_t client_oid) {
+        Response<Order*> rt;
+        rt.content() = nullptr;
 
-        std::string timestamp;
-        std::string signature;
-        std::string path = "/orders/" + id;
-        if (sign("GET", path, "", timestamp, signature)) {
-            auto response = request<Order>(baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, &logger_, LogFilter::LF_ORDER);
-            if (response && response.content().status == "done") {
-                filled_orders_.emplace(id, response.content());
+        auto ord_it = orders_.find(client_oid);
+        if (ord_it != orders_.end()) {
+            rt.content() = &ord_it->second;
+            if (rt.content()->status == "done" ||
+                rt.content()->status == "canceled") {
+                return rt;
             }
-            return response;
         }
-        return Response<Order>(1, "Failed to sign /orders/" + id + " request");
-    }
 
-    Response<Fill> Client::getFill(const std::string& id) const {
+        std::string path = "/orders/";
+        if (rt.content()) {
+            path.append(rt.content()->id);
+        }
+        else {
+            auto uuid = s_orderIdGen->getOrderUUID(client_oid);
+            if (!uuid) {
+                return Response<Order*>(1, "Unkown order " + std::to_string(client_oid));
+            }
+            path.append(uuid);
+        }
+
         std::string timestamp;
         std::string signature;
-        std::string path = "/fills?order_id=" + id;
-        if (sign("GET", path, "", timestamp, signature)) {
-            return request<Fill>(baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, &logger_, LogFilter::LF_FILL);
+        if (sign("GET", path, timestamp, signature)) {
+            auto response = request<Order>(&logger_, LogFilter::LF_ORDER, baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, rt.content());
+            if (response && !rt.content()) {
+                auto it = orders_.emplace(client_oid, std::move(response.content())).first;
+                rt.content() = &it->second;
+                rt.content()->client_oid = client_oid;
+            }
+            return rt;
         }
-        return Response<Fill>(1, "Failed to sign /fills?order_id=" + id + " request");
+        return Response<Order*>(1, "Failed to sign " + path + " request");
     }
 
-    Response<Order> Client::submitOrder(
-        const Product* product,
-        const int lots,
-        const OrderSide side,
-        const OrderType type,
-        const TimeInForce tif,
+    Response<Order*> Client::getOrder(Order* order) {
+        std::string path = "/orders/" + order->id;
+        std::string timestamp;
+        std::string signature;
+        Response<Order*> rt;
+        rt.content() = order;
+        if (sign("GET", path, timestamp, signature)) {
+            auto response = request<Order>(&logger_, LogFilter::LF_ORDER, baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, order);
+            if (!response) {
+                rt.onError(response.getCode(), response.what());
+            }
+            return rt;
+        }
+        rt.onError(1, "Failed to sign " + path + " request");
+        return rt;
+    }
+
+    Response<Order*> Client::submitOrder(
+        const Product* const product,
+        double lots,
+        OrderSide side,
+        OrderType type,
+        TimeInForce tif,
         double limit_price,
         double stop_price,
         bool post_only) {
 
-        Response<Order> response;
-        int32_t internalOrderId;
-        int retry = 1;
+        Response<Order*> response;
+        response.content() = nullptr;
+        
+        rapidjson::StringBuffer s;
+        s.Clear();
+        rapidjson::Writer<rapidjson::StringBuffer> writer(s);
+        writer.StartObject();
+
+        writer.Key("product_id");
+        writer.String(product->id.c_str());
+
+        writer.Key("side");
+        writer.String(to_string(side));
+
+        writer.Key("type");
+        writer.String(to_string(type));
+
+        if (!stp_.empty()) {
+            writer.Key("stp");
+            writer.String(stp_.c_str());
+        }
+
+        if (type == OrderType::Limit) {
+            writer.Key("time_in_force");
+            writer.String(to_string(tif));
+
+            std::ostringstream price;
+            price.precision(compute_number_decimals(product->quote_increment));
+            if (side == OrderSide::Buy) {
+                price << std::fixed << (limit_price - 0.5 * product->quote_increment);
+            }
+            else {
+                price << std::fixed << (limit_price + 0.5 * product->quote_increment);
+            }
+
+            writer.Key("price");
+            writer.String(price.str().c_str());
+
+            if (stop_price) {
+                writer.Key("stop_price");
+                writer.String(std::to_string(stop_price).c_str());
+                writer.Key("stop");
+                writer.String("loss");
+            }
+
+            if (tif != TimeInForce::FOK && tif != TimeInForce::IOC) {
+                writer.Key("post_only");
+                writer.Bool(post_only);
+            }
+        }
+
+        std::ostringstream qty;
+        qty.precision(compute_number_decimals(product->base_increment));
+        qty << std::fixed << lots;
+
+        writer.Key("size");
+        writer.String(qty.str().c_str());
+
+        writer.EndObject();
+        auto data = s.GetString();
+
         auto start = std::time(nullptr);
-        do {
-            rapidjson::StringBuffer s;
-            s.Clear();
-            rapidjson::Writer<rapidjson::StringBuffer> writer(s);
-            writer.StartObject();
-
-            writer.Key("product_id");
-            writer.String(product->id.c_str());
-
-            writer.Key("side");
-            writer.String(to_string(side));
-
-            writer.Key("type");
-            writer.String(to_string(type));
-
-            if (!stp_.empty()) {
-                writer.Key("stp");
-                writer.String(stp_.c_str());
-            }
-
-            std::ostringstream qty;
-            qty.precision(compute_number_decimals(product->base_increment));
-            qty << std::fixed << lots * product->base_min_size;
-
-            if (type == OrderType::Limit) {
-                writer.Key("time_in_force");
-                writer.String(to_string(tif));
-
-                writer.Key("price");
-                writer.String(std::to_string(limit_price).c_str());
-
-                if (stop_price) {
-                    writer.Key("stop_price");
-                    writer.String(std::to_string(stop_price).c_str());
-                }
-            }
-
-            writer.Key("size");
-            writer.String(qty.str().c_str());
-
-            writer.EndObject();
-            auto data = s.GetString();
-
-            logger_.logTrace("SubmitOrder:\n%s\n", data);
-
-            std::string timestamp;
-            std::string signature;
-            if (sign("POST", "/orders", data, timestamp, signature)) {
-                response = request<Order>(baseUrl_ + "/orders", headers(signature, timestamp).c_str(), data, &logger_, LogFilter::LF_ORDER);
-                if (response) {
-                    Order* order = &response.content();
-                    while (order->status == "pending") {
-                        response = getOrder(order->id);
-                        if (!response) {
-                            break;
-                        }
-                        if (std::difftime(std::time(nullptr), start) >= 30) {
-                            return Response<Order>(-2, "Order response timedout");
-                        }
-                        order = &response.content();
+        std::string timestamp;
+        std::string signature;
+        if (sign("POST", "/orders", timestamp, signature, data)) {
+            auto rsp = request<Order>(&logger_, LogFilter::LF_ORDER, baseUrl_ + "/orders", headers(signature, timestamp).c_str(), data);
+            if (rsp) {
+                Order& order = rsp.content();
+                s_orderIdGen->saveOrder(order);
+                auto iter = orders_.insert(std::make_pair(order.client_oid, order)).first;
+                response.content() = &iter->second;
+                while (iter->second.status == "pending") {
+                    response = getOrder(response.content());
+                    if (!response) {
+                        break;
                     }
-                    return response;
+                    if (std::difftime(std::time(nullptr), start) >= 30) {
+                        response.onError(-2, "Order response timedout");
+                        return response;
+                    }
                 }
             }
             else {
-                response.onError(1, "Failed to sign order request");
-                break;
-            }            
-        } while (!response && retry--);
+                response.onError(1, rsp.what());
+            }
+        }
+        else {
+            response.onError(1, "Failed to sign order request");
+        }            
         return response;
     }
 
-    Response<Order> Client::cancelOrder(const std::string& id) {
-        logger_.logDebug("--> DELETE %s/v2/orders/%s\n", baseUrl_.c_str(), id.c_str());
-        auto response = request<Order>(baseUrl_ + "/v2/orders/" + id, "#DELETE", nullptr, &logger_, LogFilter::LF_ORDER);
-        if (!response) {
-            // Alpaca cancelOrder not return a object
-            Order* order;
-            do {
-                auto resp = getOrder(id);
-                if (resp) {
-                    order = &resp.content();
-                    if (order->status == "canceled" || order->status == "filled") {
-                        return resp;
-                    }
-                }
-            } while (order->status == "pending_cancel");
-            logger_.logWarning("failed to cancel order %s. order status=%s", id.c_str(), order->status.c_str());
-            return Response<Order>(1, "Failed to cancel order");
+    Response<bool> Client::cancelOrder(Order& order) {
+        logger_.logDebug("--> DELETE %s/orders/%s\n", baseUrl_.c_str(), order.id.c_str());
+        auto path = "/orders/" + order.id;
+        std::string timestamp;
+        std::string signature;
+        if (sign("DELETE", path, timestamp, signature)) {
+            auto response = request<std::string>(&logger_, LogFilter::LF_ORDER, baseUrl_ + path, headers(signature, timestamp).c_str(), "#DELETE");
+            if (response) {
+                order.status = "canceled";
+                return Response<bool>(0, "OK", true);
+            }
+            return Response<bool>(1, response.what(), false);
         }
-        return response;
+        return Response<bool>(1, "Failed to sign cancelOrder request", false);
+    }
+
+    const char* Client::getOrderUUID(int32_t client_oid) {
+        return s_orderIdGen->getOrderUUID(client_oid);
+    }
+
+    void Client::onPositionClosed(int32_t client_oid) {
+        s_orderIdGen->onPositionClosed(client_oid);
     }
 
 } // namespace gdax

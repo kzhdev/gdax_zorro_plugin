@@ -8,7 +8,7 @@
 #include "logger.h"
 #include "gdax/account.h"
 #include "gdax/product.h"
-#include "market_data/candle.h"
+#include "gdax/candle.h"
 #include "gdax/order.h"
 #include "gdax/ticker.h"
 #include "gdax/fill.h"
@@ -44,30 +44,33 @@ namespace gdax {
             
         Response<std::vector<Order>> getOrders() const;
 
-        Response<Order> getOrder(const std::string& id);
+        Response<Order*> getOrder(int32_t client_oid);
 
-        Response<Order> submitOrder(
-            const Product* product,
-            const int lots,
-            const OrderSide side,
-            const OrderType type,
-            const TimeInForce tif,
+        Response<Order*> submitOrder(
+            const Product* const product,
+            double lots,
+            OrderSide side,
+            OrderType type,
+            TimeInForce tif,
             double limit_price = 0.0,
             double stop_price = 0.0,
             bool post_only = false);
 
-        Response<Order> cancelOrder(const std::string& id);
+        Response<bool> cancelOrder(Order& order);
 
-        Response<Fill> getFill(const std::string& oid) const;
+        const char* getOrderUUID(int32_t client_oid);
+        void onPositionClosed(int32_t client_oid);
 
     private:
         bool sign(
             const char* method,
             const std::string& request_path,
-            const std::string& body,
             std::string& timestamp,
-            std::string& sign) const;
+            std::string& sign,
+            const std::string& body = "") const;
         std::string headers(const std::string& sign, const std::string& timestamp) const;
+
+        Response<Order*> getOrder(Order*);
 
     private:
         const std::string baseUrl_;
@@ -80,7 +83,7 @@ namespace gdax {
         mutable Logger logger_;
 
         std::unordered_map<std::string, Product> products_;
-        std::unordered_map<std::string, Order> filled_orders_;
+        std::unordered_map<int32_t, Order> orders_;
     };
 
 } // namespace gdax

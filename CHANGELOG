@@ -1,2 +1,9 @@
-v0.1.0
+v0.0.2
+- Implemented client order id and UUID mapping.
+- Fixed order cancel
+- Fixed post_only flag
+- Added order size residual through brokerCommand 2002
+- Reset global variable on login
+
+v0.0.1
 - Initial Release

@@ -34,6 +34,8 @@ namespace {
     bool s_postOnly = true;
     std::string s_lastOrder;
     double s_limitPrice = 0.;
+    double s_amount = 1;
+    uint32_t s_residual = 0;
 }
 
 namespace gdax
@@ -67,6 +69,15 @@ namespace gdax
             wsClient->logout();
             return 0;
         }
+
+        // reset global variables
+        s_residual = 0;
+        s_priceType = 0;
+        s_lastOrder = "";
+        s_limitPrice = 0.;
+        s_postOnly = true;
+        s_amount = 1;
+        s_tif = TimeInForce::FOK;
 
         bool isPaperTrading = strcmp(Type, "Demo") == 0;
 
@@ -189,7 +200,7 @@ namespace gdax
         s_logger->logDebug("BorkerHisotry %s start: %d end: %d nTickMinutes: %d nTicks: %d\n", Asset, start, end, nTickMinutes, nTicks);
 
         int barsDownloaded = 0;
-        uint32_t firstCandelTime = 0;
+        long firstCandelTime = 0;
         do {
             auto response = client->getCandles(Asset, start, end, nTickMinutes * 60, nTicks);
             if (!response) {
@@ -213,11 +224,11 @@ namespace gdax
                 auto& tick = ticks[barsDownloaded++];
                 // change time to bar close time
                 tick.time = convertTime(barCloseTime);
-                tick.fOpen = candle.open;
-                tick.fHigh = candle.high;
-                tick.fLow = candle.low;
-                tick.fClose = candle.close;
-                tick.fVol = candle.volume;
+                tick.fOpen = (float)candle.open;
+                tick.fHigh = (float)candle.high;
+                tick.fLow = (float)candle.low;
+                tick.fClose = (float)candle.close;
+                tick.fVol = (float)candle.volume;
 
                 if (barsDownloaded == nTicks) {
                     break;
@@ -268,8 +279,8 @@ namespace gdax
 
         s_logger->logDebug("BrokerBuy2 %s nAmount=%d dStopDist=%f limit=%f\n", Asset, nAmount, dStopDist, dLimit);
 
-        auto response = client->submitOrder(product, std::abs(nAmount), side, type, s_tif, dLimit, dStopDist, s_postOnly);
-        if (!response) {
+        auto response = client->submitOrder(product, std::abs(nAmount) * product->base_min_size + s_residual * product->base_increment, side, type, s_tif, dLimit, dStopDist, s_postOnly);
+        if (!response || !response.content()) {
             if (response.getCode() == -2) {
                 return -2;
             }
@@ -279,7 +290,7 @@ namespace gdax
             return 0;
         }
 
-        auto& order = response.content();
+        auto& order = *response.content();
         s_lastOrder = order.id;
 
         if (order.filled_size) {
@@ -287,114 +298,153 @@ namespace gdax
                 *pPrice = order.filled_price;
             }
             if (pFill) {
-                *pFill = order.filled_size / product->base_min_size;
+                *pFill = int(order.filled_size / product->base_min_size);
             }
         }
-        return -1;
+        else {
+            if (pFill) {
+                *pFill = 0;
+            }
+        }
+        return order.client_oid;
     }
 
     DLLFUNC_C int BrokerTrade(int nTradeID, double* pOpen, double* pClose, double* pCost, double *pProfit) {
-        if (nTradeID != -1) {
+        /*if (nTradeID != -1) {
             BrokerError(("nTradeID " + std::to_string(nTradeID) + " not valid. Need to be an UUID").c_str());
             return NAY;
-        }
+        }*/
         
-        Response<Order> response = client->getOrder(s_lastOrder);
+        Response<Order*> response = client->getOrder(nTradeID);
         if (!response) {
             BrokerError(response.what().c_str());
             return NAY;
         }
 
-        auto& order = response.content();
+        auto* order = response.content();
 
-        if (pOpen && order.filled_size) {
-            *pOpen = order.filled_price;
+        if (pOpen && order->filled_size) {
+            *pOpen = order->filled_price;
         }
 
-        if (pCost && order.filled_size) {
-            *pCost = order.fill_fees;
+        if (pCost && order->filled_size) {
+            *pCost = order->fill_fees;
+
+            if (order->closeOrder) {
+                *pClose += order->closeOrder->fill_fees;
+            }
         }
 
-        const auto* product = client->getProduct(order.product_id.c_str());
-        return order.filled_size / product->base_min_size;
+        const auto* product = client->getProduct(order->product_id.c_str());
+        return int(order->filled_size / product->base_min_size);
     }
 
     DLLFUNC_C int BrokerSell2(int nTradeID, int nAmount, double Limit, double* pClose, double* pCost, double* pProfit, int* pFill) {
         s_logger->logDebug("BrokerSell2 nTradeID=%d nAmount=%d limit=%f\n", nTradeID, nAmount, Limit);
 
-        Response<Order> response = client->getOrder(s_lastOrder);
+        Response<Order*> response = client->getOrder(nTradeID);
         if (!response) {
             BrokerError(response.what().c_str());
             return 0;
         }
 
-        auto& order = response.content();
-        if (order.status == "done" || (order.filled_size && order.filled_size >= std::abs(nAmount))) {
-            // order has been filled
-            auto closeTradeId = BrokerBuy2((char*)order.product_id.c_str(), -nAmount, 0, Limit, pClose, pFill);
-            if (closeTradeId) {
-                auto rsp = client->getOrder(s_lastOrder);
-                if (rsp) {
-                    auto& closeOrder = rsp.content();
-                    if (closeOrder.status == "done") {
-                        if (pCost) {
-                            *pCost = closeOrder.fill_fees + order.fill_fees;
-                        }
-                        if (pProfit) {
-                            if (order.side == OrderSide::Buy) {
-                                *pProfit = (closeOrder.executed_value - order.executed_value) - order.fill_fees - closeOrder.fill_fees;
-                            }
-                            else {
-                                *pProfit = (order.executed_value - closeOrder.executed_value) - order.fill_fees - closeOrder.fill_fees;
-                            }
-                        }
-                    }
-                }
+        auto* order = response.content();
+        if (!nAmount) {
+            // cancel order
+            if (order->status == "canceled" || order->status == "done") {
+                return nTradeID;
             }
-            s_lastOrder = order.id;
-            return nTradeID;
+            auto response = client->cancelOrder(*order);
+            if (response) {
+                return nTradeID;
+            }
+            BrokerError(response.what().c_str());
+            return 0;
         }
-        else {
-            BrokerError(("Close working order " + order.id).c_str());
-            if (order.filled_size) {
-                auto closeTradeId = BrokerBuy2((char*)order.product_id.c_str(), order.side == OrderSide::Buy ? -order.filled_size : order.filled_size, 0, Limit, pClose, pFill);
-                if (closeTradeId != -1) {
-                    auto rsp = client->getOrder(s_lastOrder);
+
+        auto size = std::abs(nAmount) * s_amount;
+        if (order->status == "done" || (order->filled_size && order->filled_size >= size)) {
+            // order has been filled, close open position
+            auto closeTradeId = BrokerBuy2((char*)order->product_id.c_str(), -nAmount, 0, Limit, pClose, pFill);
+            if (closeTradeId > 0) {
+                Order* closeOrder = nullptr;
+                auto start = std::time(nullptr);
+                do {
+                    auto rsp = client->getOrder(closeTradeId);
                     if (rsp) {
-                        auto& closeOrder = rsp.content();
-                        if (closeOrder.status == "done") {
+                        auto* closeOrder = rsp.content();
+                        if (closeOrder->status == "done") {
+                            order->closeOrder = closeOrder;
                             if (pCost) {
-                                *pCost = closeOrder.fill_fees + order.fill_fees;
+                                *pCost = closeOrder->fill_fees + order->fill_fees;
                             }
                             if (pProfit) {
-                                if (order.side == OrderSide::Buy) {
-                                    *pProfit = (closeOrder.executed_value - order.executed_value) - order.fill_fees - closeOrder.fill_fees;
+                                if (order->side == OrderSide::Buy) {
+                                    *pProfit = closeOrder->executed_value - order->executed_value;
                                 }
                                 else {
-                                    *pProfit = (order.executed_value - closeOrder.executed_value) - order.fill_fees - closeOrder.fill_fees;
+                                    *pProfit = order->executed_value - closeOrder->executed_value;
                                 }
                             }
+
+                            if (order->filled_size == size) {
+                                client->onPositionClosed(nTradeID);
+                                client->onPositionClosed(closeTradeId);
+                            }
                         }
+                        return nTradeID;
                     }
+                    BrokerProgress(1);
                 }
-                s_lastOrder = order.id;
+                while (closeOrder && closeOrder->status != "done" && (std::time(nullptr) - start) < 10);
             }
-            auto diff = order.size - (std::abs(nAmount) - order.filled_size);
+            return 0;
+        }
+        else {
+            BrokerError(("Close working order " + std::to_string(nTradeID)).c_str());
+            if (order->filled_size) {
+                auto closeTradeId = BrokerBuy2((char*)order->product_id.c_str(), order->side == OrderSide::Buy ? -order->filled_size / s_amount : order->filled_size / s_amount, 0, Limit, pClose, pFill);
+                if (closeTradeId > 0) {
+                    Order* closeOrder = nullptr;
+                    auto start = std::time(nullptr);
+                    do {
+                        auto rsp = client->getOrder(closeTradeId);
+                        if (rsp) {
+                            closeOrder = rsp.content();
+                            if (closeOrder->status == "done") {
+                                order->closeOrder = closeOrder;
+                                if (pCost) {
+                                    *pCost = closeOrder->fill_fees + order->fill_fees;
+                                }
+                                if (pProfit) {
+                                    if (order->side == OrderSide::Buy) {
+                                        *pProfit = (closeOrder->executed_value - order->executed_value);
+                                    }
+                                    else {
+                                        *pProfit = (order->executed_value - closeOrder->executed_value);
+                                    }
+                                }
+                                client->onPositionClosed(closeOrder->client_oid);
+                            }
+                        }
+                        BrokerProgress(1);
+                    }                    
+                    while (closeOrder && closeOrder->status != "done" && (std::time(nullptr) - start) < 10);
+                }
+            }
+            auto diff = order->size - (size - order->filled_size);
             assert(diff >= 0);
-            auto response = client->cancelOrder(order.id);
+            auto response = client->cancelOrder(*order);
             if (!response) {
-                BrokerError(("Failed to close trade " + order.id + " " + response.what()).c_str());
+                BrokerError(("Failed to close trade " + std::to_string(order->client_oid) + "(" + order->id + "). " + response.what()).c_str());
                 return 0;
             }
+            client->onPositionClosed(nTradeID);
 
             if (diff > 0) {
-                auto newOrderId = BrokerBuy2((char*)order.product_id.c_str(), order.side == OrderSide::Buy ? diff : -diff, 0, Limit, nullptr, nullptr);
-                if (newOrderId != -1) {
-                    return -1;
-                }
-                BrokerError(("Failed to replace trade " + response.what()).c_str());
-                return 0;
+                return BrokerBuy2((char*)order->product_id.c_str(), order->side == OrderSide::Buy ? diff / s_amount : -diff / s_amount, 0, Limit, nullptr, nullptr);
             }
+            return nTradeID;
         }
         return 0;
     }
@@ -507,9 +557,6 @@ namespace gdax
         case GET_COMPLIANCE:
             return 15; // full NFA compliant
 
-        //case GET_BROKERZONE:
-            //return ET; // for now since Alpaca only support US
-
         case GET_UUID:
             strncpy((char*)dwParameter, s_lastOrder.c_str(), s_lastOrder.size() + 1);
             return dwParameter;
@@ -519,6 +566,7 @@ namespace gdax
             return dwParameter;
 
         case SET_AMOUNT:
+            s_amount = *(double*)dwParameter;
             break;
 
         case GET_MAXTICKS:
@@ -575,8 +623,7 @@ namespace gdax
             return dwParameter;
 
         case SET_LIMIT:
-            s_limitPrice = (double)dwParameter;
-            s_logger->logDebug("SET_LIMIT: %f\n", (double)dwParameter);
+            s_limitPrice = *(double*)dwParameter;
             return dwParameter;
 
         case GET_VOLTYPE:
@@ -602,6 +649,11 @@ namespace gdax
 
         case 2001: {
             downloadAssets((char*)dwParameter);
+            break;
+        }
+
+        case 2002: {
+            s_residual = (uint32_t)dwParameter;
             break;
         }
 

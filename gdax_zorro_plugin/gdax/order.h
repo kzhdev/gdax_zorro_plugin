@@ -122,6 +122,7 @@ namespace gdax {
         double filled_size;
         double filled_price;
         double executed_value;
+        int32_t client_oid = 0;
         OrderSide side;
         TimeInForce tif = TimeInForce::GTC;
         OrderType type;
@@ -133,6 +134,8 @@ namespace gdax {
         std::string id;
         std::string stp;
         std::string status;
+
+        Order* closeOrder = nullptr;
 
     private:
         template<typename> friend class Response;

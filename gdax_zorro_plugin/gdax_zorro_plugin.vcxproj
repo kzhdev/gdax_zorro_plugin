@@ -90,6 +90,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="gdax\candle.h" />
+    <ClInclude Include="gdax\client_order_id_generator.h" />
     <ClInclude Include="gdax\ticker.h" />
     <ClInclude Include="gdax\time.h" />
     <ClInclude Include="gdax\fill.h" />
@@ -101,7 +103,6 @@
     <ClInclude Include="gdax\json.h" />
     <ClInclude Include="gdax\order.h" />
     <ClInclude Include="logger.h" />
-    <ClInclude Include="market_data\candle.h" />
     <ClInclude Include="request.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="stdafx.h" />

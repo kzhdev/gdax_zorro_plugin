@@ -84,6 +84,21 @@ To install the plugin, download the [latest release](https://github.com/kzhdev/g
   }
   ```
 
+* 1 lot equals the base_min_size of the product. Use brokerCommand 2002 to add additional frantion of lot
+
+  ```C++
+  // 1 Lot equals the base_min_size of the product
+  // For example, for BTC-USD, 1 lot = 0.0001 BTC
+  // The base_min_increment of BTC-USD is 0.00000001
+  // Use brokerCommand(2002, residual) to add additional fraction of lot to the Lots.
+  // For example:
+  asset("BTC/USD");
+  Lots = 10;                    // order size is Lots * base_min_size, 10 * 0.0001
+  brokerCommand(2002, 5555);    // This command add additional size of 5555 * base_min_increment to the order size;
+  enterLong();
+  // This buys 0.00105555 BTC at market price
+  ```
+
 * Following Zorro Broker API functions has been implemented:
 
   * BrokerOpen
@@ -108,9 +123,6 @@ To install the plugin, download the [latest release](https://github.com/kzhdev/g
     * SET_PRICETYPE
     * SET_DIAGNOSTICS
     * SET_UUID
-
-## Caveat
-Zorro not saving orders' UUID. After restarting, Zorro uses an integer to retrieve a trade, the plugin can't map the integer to a Gdax order.
 
 ## [Build From Source](BUILD.md)
 

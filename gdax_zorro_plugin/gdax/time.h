@@ -17,7 +17,7 @@ namespace gdax {
 			parser.get<std::string>("iso", iso);
 			double epoch_time;
 			parser.get<double>("epoch", epoch_time);
-			epoch = epoch_time * 1000;
+			epoch = (uint64_t)(epoch_time * 1000);
 			return std::make_pair(0, "OK");
 		}
     };

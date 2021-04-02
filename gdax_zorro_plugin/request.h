@@ -43,6 +43,7 @@ namespace gdax {
     public:
         explicit Response(int c = 0) noexcept : code_(c), message_("OK") {}
         Response(int c, std::string m) noexcept : code_(c), message_(std::move(m)) {}
+        Response(int c, std::string m, const T& content) : code_(c), message_(std::move(m)), content_(content) {}
 
     public:
         void onError(int err_code, const std::string& msg) {
@@ -67,9 +68,9 @@ namespace gdax {
 
     private:
         template<typename T>
-        friend Response<T> request(const std::string&, const char*, const char*, Logger*, LogFilter);
+        friend Response<T> request(Logger*, LogFilter, const std::string&, const char*, const char*, T*);
 
-        void parseContent(const std::string& content) {
+        void parseContent(const std::string& content, T* obj) {
             rapidjson::Document d;
             if (d.Parse(content.c_str()).HasParseError()) {
                 message_ = "Received parse error when deserializing asset JSON. err=" + std::to_string(d.GetParseError()) + "\n" + content;
@@ -85,7 +86,14 @@ namespace gdax {
 
             try {
                 Parser<rapidjson::Document> parser(d);
-                auto result = parse<T>(parser, content_);
+                std::pair<int, std::string> result;
+
+                if (obj) {
+                    result = parse<T>(parser, *obj);
+                }
+                else {
+                    result = parse<T>(parser, content_);
+                }
                 code_ = result.first;
                 message_ = result.second;
             }
@@ -96,7 +104,13 @@ namespace gdax {
         }
 
         template<typename U>
-        std::pair<int, std::string> parse(Parser<rapidjson::Document>& parser, U& content, typename std::enable_if<!is_vector<U>::value>::type* = 0) {
+        std::pair<int, std::string> parse(Parser<rapidjson::Document>& parser, U& content, typename std::enable_if<std::is_same<U, std::string>::value>::type* = 0) {
+            content = parser.json.GetString();
+            return std::make_pair(0, "OK");
+        }
+
+        template<typename U>
+        std::pair<int, std::string> parse(Parser<rapidjson::Document>& parser, U& content, typename std::enable_if<!is_vector<U>::value && !std::is_same<U, std::string>::value>::type* = 0) {
             return content.fromJSON(parser);
         }
 
@@ -152,7 +166,7 @@ namespace gdax {
     * 
     */
     template<typename T>
-    inline Response<T> request(const std::string& url, const char* headers = nullptr, const char* data = nullptr, Logger* logger = nullptr, LogFilter filter = LogFilter::LF_NONE) {
+    inline Response<T> request(Logger* logger, LogFilter filter, const std::string& url, const char* headers = nullptr, const char* data = nullptr, T* obj = nullptr) {
         static Throttler publicApiThrottler(3);
         static Throttler privateApiThrotter(5);
 
@@ -217,7 +231,7 @@ namespace gdax {
         }
 
         Response<T> response;
-        response.parseContent(ss.str());
+        response.parseContent(ss.str(), obj);
         return response;
     }
 
