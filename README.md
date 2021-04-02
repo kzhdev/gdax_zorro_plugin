@@ -4,7 +4,7 @@
 
 ## Install
 
-To install the plugin, download the [latest release](https://github.com/kzhdev/gdax_zorro_plugin/releases/download/v0.0.1/Gdax_v0.0.1.zip) and place the Gdax.dll file into the **Plugin** folder under Zorro's root path.
+To install the plugin, download the [latest release](https://github.com/kzhdev/gdax_zorro_plugin/releases/download/v0.0.2/Gdax_v0.0.2.zip) and place the Gdax.dll file into the **Plugin** folder under Zorro's root path.
 
 ## How to Use
 

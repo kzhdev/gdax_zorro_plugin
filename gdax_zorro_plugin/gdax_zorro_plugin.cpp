@@ -18,7 +18,7 @@
 #include "gdax/client.h"
 #include "logger.h"
 #include "include/functions.h"
-#include "gdax/websocket.h"
+//#include "gdax/websocket.h"
 
 #define PLUGIN_VERSION	2
 
@@ -30,7 +30,7 @@ namespace {
     int s_multiplier = 1;
     Logger* s_logger = nullptr;
     int s_priceType = 0;
-    std::unique_ptr<GdaxWebsocket> wsClient;
+    //std::unique_ptr<GdaxWebsocket> wsClient;
     bool s_postOnly = true;
     std::string s_lastOrder;
     double s_limitPrice = 0.;
@@ -58,7 +58,7 @@ namespace gdax
         (FARPROC&)http_result = fpResult;
         (FARPROC&)http_free = fpFree;
 
-        wsClient = std::make_unique<GdaxWebsocket>();
+        //wsClient = std::make_unique<GdaxWebsocket>();
         return;
     }
 
@@ -66,7 +66,7 @@ namespace gdax
     {
         if (!User) // log out
         {
-            wsClient->logout();
+            //wsClient->logout();
             return 0;
         }
 
@@ -92,9 +92,9 @@ namespace gdax
             return 0;
         }
 
-        if (!wsClient->login(apiKey, passphrase, secret, isPaperTrading)) {
-            return 0;
-        }
+        //if (!wsClient->login(apiKey, passphrase, secret, isPaperTrading)) {
+        //    return 0;
+        //}
         
         s_logger = &client->logger();
 
