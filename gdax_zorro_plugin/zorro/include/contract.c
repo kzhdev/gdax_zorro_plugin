@@ -176,8 +176,12 @@ var contractProfitN(CONTRACT* C,int N,var Price)
 
 var contractStrike(int Type,int Days,var Price,var HistVol,var RiskFree,var Delta)
 {
-	if(!Live && Verbose > 0 && (!Type || Price == 0. || abs(Delta) > 1)) 
-	{ printf("\nError 011: contractStrike"); quit(""); } 
+	if(!Live && Verbose > 0 && (!Type || Price == 0. || abs(Delta) > 1)) { 
+		printf("\nError 011: contractStrike(%i,%i,%.2f,..,%.3f)",
+		Type,Days,Price,Delta); 
+		quit("");
+		return 0;
+	} 
 //	K = S0 * exp(-qnorm(delta) * sigma * sqrt(T) + ((sigma^2)/2) * T)
 	var T = Days/365.25;
 	var D1 = qnorm(abs(Delta)); // * exp(RiskFree*T));
@@ -390,11 +394,11 @@ int comboType()
 	else if(!comboContract(2)) // put or call
 		return comboContract(1)->Type;
 	else if(!comboContract(3)) // Spread (call-call,put-put) or Strangle (call-put)
-		return 4 + ((comboContract(1)->Type)&(CALL | PUT))
-		+ ((comboContract(2)->Type)&(CALL | PUT));
+		return 4 + ((comboContract(1)->Type)&(CALL|PUT))
+		+ ((comboContract(2)->Type)&(CALL|PUT));
 	else if(!comboContract(4)) // Butterfly (call-call-call,put-put-put)
-		return 12 + ((comboContract(1)->Type)&(CALL | PUT));
-	else // Condor
+		return 12 + ((comboContract(1)->Type)&(CALL|PUT));
+	else // we assume Condor
 		return 20;
 }
 

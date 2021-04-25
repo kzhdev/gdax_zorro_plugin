@@ -659,3 +659,11 @@ F(CTI);
 F(CCYI);
 F(CCYIR);
 F(CCYIState);
+
+F(seriesO);
+F(seriesH);
+F(seriesL);
+F(seriesC);
+F(assign);
+F(brokerTrades);
+F(assetSource);

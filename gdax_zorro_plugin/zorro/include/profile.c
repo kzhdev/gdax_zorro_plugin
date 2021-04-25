@@ -402,7 +402,17 @@ void plotHeatmap(const char* name,var* Data,int Rows,int Cols)
 void plotHistogram(string Name,var Val,var Step,var Weight,int Color)
 {
 	var Bucket = floor(Val/Step);
-	plotBar(Name,Bucket,Step*Bucket,Weight,SUM+BARS+LBL2,Color);	
+	static var BucketMax = 0, BucketMin = 999999;
+	if(Color == -1) { // end the histogram
+		int i;
+		for(i=BucketMin; i<BucketMax; i++)
+			plotBar("#H",i,Step*i,1,BARS+LBL2,0xFF000000); // print labels
+		BucketMax = 0; BucketMin = 999999;
+	} else {
+		BucketMax = max(BucketMax,Bucket);
+		BucketMin = min(BucketMin,Bucket);
+		plotBar(Name,Bucket,Step*Bucket,Weight,SUM+BARS+LBL2,Color);
+	}
 }
 
 
