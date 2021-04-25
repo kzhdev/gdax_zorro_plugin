@@ -28,7 +28,6 @@ namespace {
     TimeInForce s_tif = TimeInForce::FOK;
     std::string s_asset;
     int s_multiplier = 1;
-    Logger* s_logger = nullptr;
     int s_priceType = 0;
     //std::unique_ptr<GdaxWebsocket> wsClient;
     bool s_postOnly = true;
@@ -92,12 +91,12 @@ namespace gdax
             return 0;
         }
 
+        Logger::instance().init("Gdax");
+
         //if (!wsClient->login(apiKey, passphrase, secret, isPaperTrading)) {
         //    return 0;
         //}
         
-        s_logger = &client->logger();
-
         //attempt login
         auto response = client->getAccounts();
         if (!response) {
@@ -197,7 +196,7 @@ namespace gdax
         auto start = convertTime(tStart);
         auto end = convertTime(tEnd);
 
-        s_logger->logDebug("BorkerHisotry %s start: %d end: %d nTickMinutes: %d nTicks: %d\n", Asset, start, end, nTickMinutes, nTicks);
+       LOG_DEBUG("BorkerHisotry %s start: %d end: %d nTickMinutes: %d nTicks: %d\n", Asset, start, end, nTickMinutes, nTicks);
 
         int barsDownloaded = 0;
         long firstCandelTime = 0;
@@ -213,7 +212,7 @@ namespace gdax
             }
 
             auto& candles = response.content().candles;
-            s_logger->logDebug("%d candles downloaded\n", candles.size());
+            LOG_DEBUG("%d candles downloaded\n", candles.size());
             for (auto& candle : candles) {
                 __time32_t barCloseTime = candle.time + nTickMinutes * 60;
                 if (barCloseTime > end) {
@@ -237,7 +236,7 @@ namespace gdax
             firstCandelTime = candles[candles.size() - 1].time;
             end = firstCandelTime - 30;
         } while (firstCandelTime > start && barsDownloaded < nTicks);
-        s_logger->logDebug("%d candles returned\n", barsDownloaded);
+        LOG_DEBUG("%d candles returned\n", barsDownloaded);
         return barsDownloaded;
     }
 
@@ -277,7 +276,7 @@ namespace gdax
             type = OrderType::Limit;
         }
 
-        s_logger->logDebug("BrokerBuy2 %s nAmount=%d dStopDist=%f limit=%f\n", Asset, nAmount, dStopDist, dLimit);
+        LOG_DEBUG("BrokerBuy2 %s nAmount=%d dStopDist=%f limit=%f\n", Asset, nAmount, dStopDist, dLimit);
 
         auto response = client->submitOrder(product, std::abs(nAmount) * product->base_min_size + s_residual * product->base_increment, side, type, s_tif, dLimit, dStopDist, s_postOnly);
         if (!response || !response.content()) {
@@ -340,7 +339,7 @@ namespace gdax
     }
 
     DLLFUNC_C int BrokerSell2(int nTradeID, int nAmount, double Limit, double* pClose, double* pCost, double* pProfit, int* pFill) {
-        s_logger->logDebug("BrokerSell2 nTradeID=%d nAmount=%d limit=%f\n", nTradeID, nAmount, Limit);
+        LOG_DEBUG("BrokerSell2 nTradeID=%d nAmount=%d limit=%f\n", nTradeID, nAmount, Limit);
 
         Response<Order*> response = client->getOrder(nTradeID);
         if (!response) {
@@ -479,7 +478,7 @@ namespace gdax
     void downloadAssets(char* symbols) {
         FILE* f;
         if (fopen_s(&f, "./Log/AssetsCoinbasePro.csv", "w+")) {
-            s_logger->logError("Failed to open ./Log/AssetsCoinbasePro.csv file\n");
+            LOG_ERROR("Failed to open ./Log/AssetsCoinbasePro.csv file\n");
             return;
         }
 
@@ -542,7 +541,7 @@ namespace gdax
         
         fflush(f);
         fclose(f);
-        s_logger->logDebug("close file\n");
+        LOG_DEBUG("close file\n");
     }
     
     DLLFUNC_C double BrokerCommand(int Command, DWORD dwParameter)
@@ -610,7 +609,7 @@ namespace gdax
                 return (int)dwParameter;
             }
 
-            s_logger->logDebug("SET_ORDERTYPE: %d s_tif=%s\n", (int)dwParameter, to_string(s_tif));
+            LOG_DEBUG("SET_ORDERTYPE: %d s_tif=%s\n", (int)dwParameter, to_string(s_tif));
             return tifToZorroOrderType(s_tif);
         }
 
@@ -619,7 +618,7 @@ namespace gdax
 
         case SET_PRICETYPE:
             s_priceType = (int)dwParameter;
-            s_logger->logDebug("SET_PRICETYPE: %d\n", s_priceType);
+            LOG_DEBUG("SET_PRICETYPE: %d\n", s_priceType);
             return dwParameter;
 
         case SET_LIMIT:
@@ -631,7 +630,7 @@ namespace gdax
 
         case SET_DIAGNOSTICS:
             if ((int)dwParameter == 1 || (int)dwParameter == 0) {
-                client->logger().setLevel((int)dwParameter ? LogLevel::L_DEBUG : LogLevel::L_OFF);
+                Logger::instance().setLevel((int)dwParameter ? LogLevel::L_DEBUG : LogLevel::L_OFF);
                 return dwParameter;
             }
             break;
@@ -658,7 +657,7 @@ namespace gdax
         }
 
         default:
-            s_logger->logDebug("Unhandled command: %d %lu\n", Command, dwParameter);
+            LOG_DEBUG("Unhandled command: %d %lu\n", Command, dwParameter);
             break;
         }
         return 0;

@@ -5,7 +5,6 @@
 #include <unordered_map>
 
 #include "request.h"
-#include "logger.h"
 #include "gdax/account.h"
 #include "gdax/product.h"
 #include "gdax/candle.h"
@@ -25,8 +24,6 @@ namespace gdax {
         explicit Client() = delete;
         explicit Client(const std::string& key, const std::string& passphrase, const std::string& secret, bool isPaperTrading, const std::string& stp = "");
         ~Client() = default;
-
-        Logger& logger() noexcept { return logger_;  }
 
         bool isLiveMode() const noexcept { return isLiveMode_;  }
 
@@ -80,7 +77,6 @@ namespace gdax {
         const std::string public_api_headers_;
         //mutable bool is_open_ = false;
         const bool isLiveMode_;
-        mutable Logger logger_;
 
         std::unordered_map<std::string, Product> products_;
         std::unordered_map<int32_t, Order> orders_;

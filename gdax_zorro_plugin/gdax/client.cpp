@@ -136,7 +136,7 @@ namespace gdax {
         std::string timestamp;
         std::string signature;
         if (sign("GET", "/accounts", timestamp, signature)) {
-            return request<std::vector<Account>>(&logger_, LogFilter::LF_ACCOUNTs, baseUrl_ + "/accounts", headers(signature, timestamp).c_str());
+            return request<std::vector<Account>>(baseUrl_ + "/accounts", headers(signature, timestamp).c_str());
         }
         return Response<std::vector<Account>>(1, "Failed to sign /accounts request");
     }
@@ -145,7 +145,7 @@ namespace gdax {
         if (!products_.empty()) {
             return products_;
         }
-        auto response =  request<std::vector<Product>>(&logger_, LogFilter::LF_PRODUCTS, baseUrl_ + "/products", public_api_headers_.c_str());
+        auto response =  request<std::vector<Product>>(baseUrl_ + "/products", public_api_headers_.c_str());
         if (!response) {
             BrokerError(("Failed to get products. err=" + response.what()).c_str());
         }
@@ -167,11 +167,11 @@ namespace gdax {
     }
 
     Response<Ticker> Client::getTicker(const std::string& id) const {
-        return request<Ticker>(&logger_, LogFilter::LF_TICKER, baseUrl_ + "/products/" + id + "/ticker", public_api_headers_.c_str());
+        return request<Ticker>(baseUrl_ + "/products/" + id + "/ticker", public_api_headers_.c_str());
     }
 
     Response<Time> Client::getTime() const {
-        return request<Time>(&logger_, LogFilter::LF_TIME, baseUrl_ + "/time", public_api_headers_.c_str());
+        return request<Time>(baseUrl_ + "/time", public_api_headers_.c_str());
     }
 
     Response<Candles> Client::getCandles(const std::string& AssetId, uint32_t start, uint32_t end, uint32_t granularity, uint32_t nCandles) const {
@@ -189,7 +189,7 @@ namespace gdax {
                 if ((granularity % (*it)) == 0) {
                     supported_granularity = *it;
                     n = (uint32_t)(granularity / supported_granularity);
-                    logger_.logDebug("Grenularity %n is not supported by Coinbase Pro, use %d instead.", granularity, supported_granularity);
+                    LOG_DEBUG("Grenularity %n is not supported by Coinbase Pro, use %d instead.", granularity, supported_granularity);
                     find = true;
                     break;
                 }
@@ -214,7 +214,7 @@ namespace gdax {
             std::stringstream ss;
             ss << baseUrl_ << "/products/" << AssetId << "/candles?start=" << timeToString(time_t(s)) << "&end=" << timeToString(time_t(e)) << "&granularity=" << supported_granularity;
 
-            return request<Candles>(&logger_, LogFilter::LF_CANDLE, ss.str(), public_api_headers_.c_str());
+            return request<Candles>(ss.str(), public_api_headers_.c_str(), nullptr, nullptr, LogLevel::L_TRACE);
         };
 
         if (n == 1) {
@@ -293,7 +293,7 @@ namespace gdax {
         std::string timestamp;
         std::string signature;
         if (sign("GET", "/orders?status=all", timestamp, signature)) {
-            return request<std::vector<Order>>(&logger_, LogFilter::LF_ORDERS, baseUrl_ + "/orders?status=all", headers(signature, timestamp).c_str());
+            return request<std::vector<Order>>(baseUrl_ + "/orders?status=all", headers(signature, timestamp).c_str());
         }
         return Response<std::vector<Order>>(1, "Failed to sign /orders request");
     }
@@ -326,7 +326,7 @@ namespace gdax {
         std::string timestamp;
         std::string signature;
         if (sign("GET", path, timestamp, signature)) {
-            auto response = request<Order>(&logger_, LogFilter::LF_ORDER, baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, rt.content());
+            auto response = request<Order>(baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, rt.content(), LogLevel::L_TRACE);
             if (response && !rt.content()) {
                 auto it = orders_.emplace(client_oid, std::move(response.content())).first;
                 rt.content() = &it->second;
@@ -344,7 +344,7 @@ namespace gdax {
         Response<Order*> rt;
         rt.content() = order;
         if (sign("GET", path, timestamp, signature)) {
-            auto response = request<Order>(&logger_, LogFilter::LF_ORDER, baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, order);
+            auto response = request<Order>(baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, order, LogLevel::L_TRACE);
             if (!response) {
                 rt.onError(response.getCode(), response.what());
             }
@@ -429,7 +429,7 @@ namespace gdax {
         std::string timestamp;
         std::string signature;
         if (sign("POST", "/orders", timestamp, signature, data)) {
-            auto rsp = request<Order>(&logger_, LogFilter::LF_ORDER, baseUrl_ + "/orders", headers(signature, timestamp).c_str(), data);
+            auto rsp = request<Order>(baseUrl_ + "/orders", headers(signature, timestamp).c_str(), data, nullptr, LogLevel::L_TRACE);
             if (rsp) {
                 Order& order = rsp.content();
                 s_orderIdGen->saveOrder(order);
@@ -457,12 +457,12 @@ namespace gdax {
     }
 
     Response<bool> Client::cancelOrder(Order& order) {
-        logger_.logDebug("--> DELETE %s/orders/%s\n", baseUrl_.c_str(), order.id.c_str());
+        LOG_DEBUG("--> DELETE %s/orders/%s\n", baseUrl_.c_str(), order.id.c_str());
         auto path = "/orders/" + order.id;
         std::string timestamp;
         std::string signature;
         if (sign("DELETE", path, timestamp, signature)) {
-            auto response = request<std::string>(&logger_, LogFilter::LF_ORDER, baseUrl_ + path, headers(signature, timestamp).c_str(), "#DELETE");
+            auto response = request<std::string>(baseUrl_ + path, headers(signature, timestamp).c_str(), "#DELETE", nullptr, LogLevel::L_TRACE);
             if (response) {
                 order.status = "canceled";
                 return Response<bool>(0, "OK", true);

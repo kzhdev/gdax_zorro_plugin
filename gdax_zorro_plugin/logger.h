@@ -19,39 +19,33 @@ namespace gdax {
         L_TRACE2,
     };
 
-    enum LogFilter : uint8_t {
-        LF_NONE = 0,
-        LF_ACCOUNTs = 1,
-        LF_PRODUCTS = 1 << 1,
-        LF_TICKER = 1 << 2,
-        LF_TIME = 1 << 3,
-        LF_ORDERS = 1 << 4,
-        LF_ORDER = 1 << 5,
-        LF_CANDLE = 1 << 6,
-        LF_FILL = 1 << 7,
-        LF_ALL = 0xFF,
-    };
+    static constexpr char* to_string(LogLevel level) {
+        constexpr char* s_levels[] = {
+            "OFF", "ERROR", "WARNING", "INFO", "DEBUG", "TRACE", "TRACE2"
+        };
+        return s_levels[level];
+    }
 
     class Logger {
     public:
-        Logger() {
+        static Logger& instance() {
+            static Logger inst;
+            return inst;
+        }
+
+        void init(std::string&& name) {
+            finit();
+            name_ = std::move(name);
 #ifdef _DEBUG
-            setLevel(LogLevel::L_TRACE2);
+            setLevel(LogLevel::L_TRACE);
 #endif
             if (level_ != LogLevel::L_OFF) {
                 open_log();
             }
         }
 
-        ~Logger() {
-            if (log_) {
-                fflush(log_);
-                fclose(log_);
-                log_ = nullptr;
-            }
-        }
-
         LogLevel getLevel() const noexcept { return level_; }
+
         void setLevel(LogLevel level) noexcept {
             level_ = level;
             if (level != LogLevel::L_OFF && !log_) {
@@ -59,57 +53,41 @@ namespace gdax {
             }
         }
 
-        uint8_t getFilter() const noexcept { return filter_; }
-        void getFilter(LogFilter filter) noexcept { filter_ = filter; }
-
         template<typename ... Args>
-        void logInfo(const char* format, Args... args) {
-            if (level_ >= LogLevel::L_INFO) {
-                log("INFO", format, std::forward<Args>(args)...);
-            }
-        }
+        inline void log(LogLevel level, const char* format, Args... args) {
+            std::time_t t = std::time(nullptr);
+            struct tm _tm;
+            localtime_s(&_tm, &t);
+            char buf[25];
+            std::strftime(buf, sizeof(buf), "%F %T", &_tm);
 
-        template<typename ... Args>
-        void logDebug(const char* format, Args... args) {
-            if (level_ >= LogLevel::L_DEBUG) {
-                log("DEBUG", format, std::forward<Args>(args)...);
-            }
-        }
-
-        template<typename ... Args>
-        void logWarning(const char* format, Args... args) {
-            if (level_ >= LogLevel::L_WARNING) {
-                log("WARN", format, std::forward<Args>(args)...);
-            }
-        }
-
-        template<typename ... Args>
-        void logError(const char* format, Args... args) {
-            if (level_ >= LogLevel::L_ERROR) {
-                log("ERROR", format, std::forward<Args>(args)...);
-            }
-        }
-
-        template<typename ... Args>
-        void logTrace(const char* format, Args... args) {
-            if (level_ >= LogLevel::L_TRACE) {
-                log("TRACE", format, std::forward<Args>(args)...);
-            }
-        }
-
-        template<typename ... Args>
-        void logTrace2(const char* format, Args... args) {
-            if (level_ >= LogLevel::L_TRACE2) {
-                log("TRACE2", format, std::forward<Args>(args)...);
-            }
+            fprintf(log_, "%s | %s | ", buf, to_string(level));
+            fprintf(log_, format, std::forward<Args>(args)...);
+            fflush(log_);
         }
 
     private:
+        Logger() = default;
+
+        ~Logger() {
+            finit();
+        }
+
+        void finit() {
+            if (log_) {
+                fflush(log_);
+                fclose(log_);
+                log_ = nullptr;
+            }
+        }
+
         void open_log() {
             std::time_t t = std::time(nullptr);
+            struct tm _tm;
+            localtime_s(&_tm, &t);
             char buf[25];
-            std::strftime(buf, sizeof(buf), "%F_%H%M%S", std::localtime(&t));
-            std::string log_file = "./Log/gdax_" + std::string(buf) + ".log";
+            std::strftime(buf, sizeof(buf), "%F_%H%M%S", &_tm);
+            std::string log_file = "./Log/" + name_ + "_" + std::string(buf) + ".log";
             log_ = fopen(log_file.c_str(), "w");
 
             if (!log_) {
@@ -118,25 +96,33 @@ namespace gdax {
             }
         }
 
-        template<typename ... Args>
-        void log(const char* level, const char* format, Args... args) {
-            std::time_t t = std::time(nullptr);
-            char buf[25];
-            std::strftime(buf, sizeof(buf), "%F %T", std::localtime(&t));
-
-            fprintf(log_, "%s | %s | ", buf, level);
-            fprintf(log_, format, std::forward<Args>(args)...);
-            fflush(log_);
-        }
-
     private:
+        std::string name_;
         FILE* log_  = nullptr;
-#ifdef _DEBUG
-        LogLevel level_ = LogLevel::L_DEBUG;
-        uint8_t filter_ = LogFilter::LF_ORDER | LogFilter::LF_ORDERS | LogFilter::LF_FILL;
-#else
         LogLevel level_ = LogLevel::L_OFF;
-        LogFilter filter_ = LogFilter::LF_NONE;
-#endif
     };
+
+
+#ifndef _LOG
+#define _LOG(level, format, ...)           \
+{\
+    auto& logger = Logger::instance();              \
+    auto lvl = logger.getLevel();                 \
+    if (lvl >= level) {   \
+        logger.log(level, format, __VA_ARGS__);      \
+    }\
+}
+
+#define LOG_DEBUG(format, ...) _LOG(L_DEBUG, format, __VA_ARGS__);
+#define LOG_INFO(format, ...) _LOG(L_INFO, format, __VA_ARGS__);
+#define LOG_WARNING(format, ...) _LOG(L_WARNING, format, __VA_ARGS__);
+#define LOG_ERROR(format, ...) _LOG(L_ERROR, format, __VA_ARGS__);
+#define LOG_TRACE(format, ...) _LOG(L_TRACE, format, __VA_ARGS__);
+#define LOG_TRACE2(format, ...) _LOG(L_TRACE, format, __VA_ARGS__);
+#ifdef _DEBUG
+#define LOG_DIAG(format, ...) _LOG(L_DEBUG, format, __VA_ARGS__);
+#else
+#define LOG_DIAG(format, ...)
+#endif
+#endif
 }

@@ -68,7 +68,7 @@ namespace gdax {
 
     private:
         template<typename T>
-        friend Response<T> request(Logger*, LogFilter, const std::string&, const char*, const char*, T*);
+        friend Response<T> request(const std::string&, const char*, const char*, T*, LogLevel logLevel);
 
         void parseContent(const std::string& content, T* obj) {
             rapidjson::Document d;
@@ -166,17 +166,15 @@ namespace gdax {
     * 
     */
     template<typename T>
-    inline Response<T> request(Logger* logger, LogFilter filter, const std::string& url, const char* headers = nullptr, const char* data = nullptr, T* obj = nullptr) {
+    inline Response<T> request(const std::string& url, const char* headers = nullptr, const char* data = nullptr, T* obj = nullptr, LogLevel logLevel = LogLevel::L_TRACE2) {
         static Throttler publicApiThrottler(3);
         static Throttler privateApiThrotter(5);
 
         Throttler& throttler = (strlen(headers) == 16) ? publicApiThrottler : privateApiThrotter;
 
-        if (logger && (logger->getFilter() & filter)) {
-            logger->logDebug("--> %s\n", url.c_str());
-            if (data) {
-                logger->logDebug("Data: %s\n", data);
-            }
+        LOG_DEBUG("--> %s\n", url.c_str());
+        if (data) {
+            LOG_DEBUG("Data: %s\n", data);
         }
 
         while (!throttler.canSent()) {
@@ -226,9 +224,7 @@ namespace gdax {
             }
         }
 
-        if (logger && (logger->getFilter() & filter)) {
-            logger->logTrace2("<-- %s\n", ss.str().c_str());
-        }
+        _LOG(logLevel, "<-- %s\n", ss.str().c_str());
 
         Response<T> response;
         response.parseContent(ss.str(), obj);

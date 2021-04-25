@@ -97,7 +97,7 @@ namespace gdax {
                 next_order_id_ = reinterpret_cast<std::atomic_int_fast32_t*>(lpvMem_);
             }
             auto next = next_order_id_->load(std::memory_order_relaxed);
-            client.logger().logInfo("last_order_id_: id=%d\n", next);
+            LOG_INFO("last_order_id_: id=%d\n", next);
         }
 
         ~ClientOrderIdGenerator() {
