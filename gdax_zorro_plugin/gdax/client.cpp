@@ -1,6 +1,5 @@
 #include "stdafx.h"
 #include "gdax/client.h"
-#include "gdax/client_order_id_generator.h"
 
 #include <sstream>
 #include <memory>
@@ -39,8 +38,6 @@ namespace {
     constexpr const char* s_APIBaseURLLive = "https://api.pro.coinbase.com";
     /// The base URL for API calls to the paper trading API
     constexpr const char* s_APIBaseURLPaper = "https://api-public.sandbox.pro.coinbase.com";
-
-    std::unique_ptr<gdax::ClientOrderIdGenerator> s_orderIdGen;
 
     inline uint64_t get_timestamp() {
         auto now = std::chrono::system_clock::now();
@@ -93,7 +90,6 @@ namespace gdax {
         , public_api_headers_("User-Agent:Zorro")
         , isLiveMode_(!isPaperTrading)
     {
-        s_orderIdGen = std::make_unique<ClientOrderIdGenerator>(*this);
         try {
             StringSource(secret, true, new Base64Decoder(new StringSink(secret_)));
         }
@@ -298,11 +294,11 @@ namespace gdax {
         return Response<std::vector<Order>>(1, "Failed to sign /orders request");
     }
 
-    Response<Order*> Client::getOrder(int32_t client_oid) {
+    Response<Order*> Client::getOrder(const std::string& order_id) {
         Response<Order*> rt;
         rt.content() = nullptr;
 
-        auto ord_it = orders_.find(client_oid);
+        auto ord_it = orders_.find(order_id);
         if (ord_it != orders_.end()) {
             rt.content() = &ord_it->second;
             if (rt.content()->status == "done" ||
@@ -316,11 +312,7 @@ namespace gdax {
             path.append(rt.content()->id);
         }
         else {
-            auto uuid = s_orderIdGen->getOrderUUID(client_oid);
-            if (!uuid) {
-                return Response<Order*>(1, "Unkown order " + std::to_string(client_oid));
-            }
-            path.append(uuid);
+            path.append(order_id);
         }
 
         std::string timestamp;
@@ -328,9 +320,8 @@ namespace gdax {
         if (sign("GET", path, timestamp, signature)) {
             auto response = request<Order>(baseUrl_ + path, headers(signature, timestamp).c_str(), nullptr, rt.content(), LogLevel::L_TRACE);
             if (response && !rt.content()) {
-                auto it = orders_.emplace(client_oid, std::move(response.content())).first;
+                auto it = orders_.emplace(order_id, std::move(response.content())).first;
                 rt.content() = &it->second;
-                rt.content()->client_oid = client_oid;
             }
             return rt;
         }
@@ -432,8 +423,7 @@ namespace gdax {
             auto rsp = request<Order>(baseUrl_ + "/orders", headers(signature, timestamp).c_str(), data, nullptr, LogLevel::L_TRACE);
             if (rsp) {
                 Order& order = rsp.content();
-                s_orderIdGen->saveOrder(order);
-                auto iter = orders_.insert(std::make_pair(order.client_oid, order)).first;
+                auto iter = orders_.insert(std::make_pair(order.id, order)).first;
                 response.content() = &iter->second;
                 while (iter->second.status == "pending") {
                     response = getOrder(response.content());
@@ -470,14 +460,6 @@ namespace gdax {
             return Response<bool>(1, response.what(), false);
         }
         return Response<bool>(1, "Failed to sign cancelOrder request", false);
-    }
-
-    const char* Client::getOrderUUID(int32_t client_oid) {
-        return s_orderIdGen->getOrderUUID(client_oid);
-    }
-
-    void Client::onPositionClosed(int32_t client_oid) {
-        s_orderIdGen->onPositionClosed(client_oid);
     }
 
 } // namespace gdax

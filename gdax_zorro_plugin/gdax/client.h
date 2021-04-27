@@ -41,7 +41,7 @@ namespace gdax {
             
         Response<std::vector<Order>> getOrders() const;
 
-        Response<Order*> getOrder(int32_t client_oid);
+        Response<Order*> getOrder(const std::string& order_id);
 
         Response<Order*> submitOrder(
             const Product* const product,
@@ -79,7 +79,7 @@ namespace gdax {
         const bool isLiveMode_;
 
         std::unordered_map<std::string, Product> products_;
-        std::unordered_map<int32_t, Order> orders_;
+        std::unordered_map<std::string, Order> orders_;
     };
 
 } // namespace gdax

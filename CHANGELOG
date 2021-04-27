@@ -1,3 +1,8 @@
+v0.0.3
+- Imporoved loggeer preformance.
+- Removed client order id. Relying on Zorro to persist the UUID. (Zorro version above 3.6.9 is required).
+- Changed Asset lotAmount to product's base increment. The strategy needs to make sure the order quantity satify the base min size.
+
 v0.0.2
 - Implemented client order id and UUID mapping.
 - Fixed order cancel

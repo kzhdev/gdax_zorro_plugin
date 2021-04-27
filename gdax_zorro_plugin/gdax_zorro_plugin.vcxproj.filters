@@ -63,10 +63,10 @@
     <ClInclude Include="gdax\websocket.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="gdax\client_order_id_generator.h">
+    <ClInclude Include="gdax\candle.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="gdax\candle.h">
+    <ClInclude Include="resource1.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -88,5 +88,10 @@
     <None Include="..\README.md" />
     <None Include="..\CHANGELOG" />
     <None Include="..\BUILD.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="gdax_zorro_plugin.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
   </ItemGroup>
 </Project>

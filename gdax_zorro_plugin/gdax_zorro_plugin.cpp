@@ -31,10 +31,9 @@ namespace {
     int s_priceType = 0;
     //std::unique_ptr<GdaxWebsocket> wsClient;
     bool s_postOnly = true;
-    std::string s_lastOrder;
+    std::string s_uuid;
     double s_limitPrice = 0.;
     double s_amount = 1;
-    uint32_t s_residual = 0;
 }
 
 namespace gdax
@@ -70,12 +69,11 @@ namespace gdax
         }
 
         // reset global variables
-        s_residual = 0;
         s_priceType = 0;
-        s_lastOrder = "";
+        s_uuid = "";
         s_limitPrice = 0.;
         s_postOnly = true;
-        s_amount = 1;
+        s_amount = 1.;
         s_tif = TimeInForce::FOK;
 
         bool isPaperTrading = strcmp(Type, "Demo") == 0;
@@ -170,7 +168,7 @@ namespace gdax
         }
 
         if (pLotAmount) {
-            *pLotAmount = product->base_min_size;
+            *pLotAmount = product->base_increment;
         }
 
         if (pRollLong) {
@@ -278,7 +276,18 @@ namespace gdax
 
         LOG_DEBUG("BrokerBuy2 %s nAmount=%d dStopDist=%f limit=%f\n", Asset, nAmount, dStopDist, dLimit);
 
-        auto response = client->submitOrder(product, std::abs(nAmount) * product->base_min_size + s_residual * product->base_increment, side, type, s_tif, dLimit, dStopDist, s_postOnly);
+        double lot = std::abs(nAmount) * s_amount;
+        
+        // reset s_amount, next asset might have lotAmount = 1, in that case SET_AMOUNT will not be called in advance
+        s_amount = 1.;
+
+        if (lot < product->base_min_size)
+        {
+            BrokerError((std::string(Asset) + " order size must be greater than " + std::to_string(product->base_min_size) + ", lotAmount=" + std::to_string(lot)).c_str());
+            return 0;
+        }
+
+        auto response = client->submitOrder(product, lot, side, type, s_tif, dLimit, dStopDist, s_postOnly);
         if (!response || !response.content()) {
             if (response.getCode() == -2) {
                 return -2;
@@ -290,14 +299,14 @@ namespace gdax
         }
 
         auto& order = *response.content();
-        s_lastOrder = order.id;
+        s_uuid = order.id;
 
         if (order.filled_size) {
             if (pPrice) {
                 *pPrice = order.filled_price;
             }
             if (pFill) {
-                *pFill = int(order.filled_size / product->base_min_size);
+                *pFill = int(order.filled_size / product->base_increment);
             }
         }
         else {
@@ -305,16 +314,16 @@ namespace gdax
                 *pFill = 0;
             }
         }
-        return order.client_oid;
+        return -1;
     }
 
     DLLFUNC_C int BrokerTrade(int nTradeID, double* pOpen, double* pClose, double* pCost, double *pProfit) {
-        /*if (nTradeID != -1) {
+        if (nTradeID != -1) {
             BrokerError(("nTradeID " + std::to_string(nTradeID) + " not valid. Need to be an UUID").c_str());
             return NAY;
-        }*/
+        }
         
-        Response<Order*> response = client->getOrder(nTradeID);
+        Response<Order*> response = client->getOrder(s_uuid);
         if (!response) {
             BrokerError(response.what().c_str());
             return NAY;
@@ -335,13 +344,18 @@ namespace gdax
         }
 
         const auto* product = client->getProduct(order->product_id.c_str());
-        return int(order->filled_size / product->base_min_size);
+        return int(order->filled_size / product->base_increment);
     }
 
     DLLFUNC_C int BrokerSell2(int nTradeID, int nAmount, double Limit, double* pClose, double* pCost, double* pProfit, int* pFill) {
-        LOG_DEBUG("BrokerSell2 nTradeID=%d nAmount=%d limit=%f\n", nTradeID, nAmount, Limit);
+        if (nTradeID != -1) {
+            BrokerError(("nTradeID " + std::to_string(nTradeID) + " not valid. Need to be an UUID").c_str());
+            return 0;
+        }
 
-        Response<Order*> response = client->getOrder(nTradeID);
+        LOG_DEBUG("BrokerSell2 UUID=%s nAmount=%d limit=%f\n", s_uuid.c_str(), nAmount, Limit);
+
+        Response<Order*> response = client->getOrder(s_uuid);
         if (!response) {
             BrokerError(response.what().c_str());
             return 0;
@@ -365,11 +379,11 @@ namespace gdax
         if (order->status == "done" || (order->filled_size && order->filled_size >= size)) {
             // order has been filled, close open position
             auto closeTradeId = BrokerBuy2((char*)order->product_id.c_str(), -nAmount, 0, Limit, pClose, pFill);
-            if (closeTradeId > 0) {
+            if (closeTradeId == -1) {
                 Order* closeOrder = nullptr;
                 auto start = std::time(nullptr);
                 do {
-                    auto rsp = client->getOrder(closeTradeId);
+                    auto rsp = client->getOrder(s_uuid);
                     if (rsp) {
                         auto* closeOrder = rsp.content();
                         if (closeOrder->status == "done") {
@@ -385,13 +399,8 @@ namespace gdax
                                     *pProfit = order->executed_value - closeOrder->executed_value;
                                 }
                             }
-
-                            if (order->filled_size == size) {
-                                client->onPositionClosed(nTradeID);
-                                client->onPositionClosed(closeTradeId);
-                            }
                         }
-                        return nTradeID;
+                        return -1;
                     }
                     BrokerProgress(1);
                 }
@@ -400,14 +409,14 @@ namespace gdax
             return 0;
         }
         else {
-            BrokerError(("Close working order " + std::to_string(nTradeID)).c_str());
+            BrokerError(("Close working order uuid=" + s_uuid).c_str());
             if (order->filled_size) {
                 auto closeTradeId = BrokerBuy2((char*)order->product_id.c_str(), order->side == OrderSide::Buy ? -order->filled_size / s_amount : order->filled_size / s_amount, 0, Limit, pClose, pFill);
-                if (closeTradeId > 0) {
+                if (closeTradeId == -1) {
                     Order* closeOrder = nullptr;
                     auto start = std::time(nullptr);
                     do {
-                        auto rsp = client->getOrder(closeTradeId);
+                        auto rsp = client->getOrder(s_uuid);
                         if (rsp) {
                             closeOrder = rsp.content();
                             if (closeOrder->status == "done") {
@@ -423,7 +432,6 @@ namespace gdax
                                         *pProfit = (order->executed_value - closeOrder->executed_value);
                                     }
                                 }
-                                client->onPositionClosed(closeOrder->client_oid);
                             }
                         }
                         BrokerProgress(1);
@@ -435,15 +443,14 @@ namespace gdax
             assert(diff >= 0);
             auto response = client->cancelOrder(*order);
             if (!response) {
-                BrokerError(("Failed to close trade " + std::to_string(order->client_oid) + "(" + order->id + "). " + response.what()).c_str());
+                BrokerError(("Failed to close trade uuid=" + order->id + ". " + response.what()).c_str());
                 return 0;
             }
-            client->onPositionClosed(nTradeID);
 
             if (diff > 0) {
                 return BrokerBuy2((char*)order->product_id.c_str(), order->side == OrderSide::Buy ? diff / s_amount : -diff / s_amount, 0, Limit, nullptr, nullptr);
             }
-            return nTradeID;
+            return -1;
         }
         return 0;
     }
@@ -498,17 +505,17 @@ namespace gdax
             if (!isnan(ticker.ask) && !isnan(ticker.bid)) {
                 fprintf(f, "%s,%.8f,%.8f,0.0,0.0,%.8f,%.8f,0.0,1,%.8f,0.000,%s\n",
                     prod.display_name.c_str(), ticker.ask, (ticker.ask - ticker.bid), prod.quote_increment,
-                    prod.quote_increment, prod.base_min_size, prod.id.c_str());
+                    prod.quote_increment, prod.base_increment, prod.id.c_str());
             }
             else if (!isnan(ticker.ask)) {
                 fprintf(f, "%s,%.8f,NAN,0.0,0.0,%.8f,%.8f,0.0,1,%.8f,0.000,%s\n",
                     prod.display_name.c_str(), ticker.ask, prod.quote_increment,
-                    prod.quote_increment, prod.base_min_size, prod.id.c_str());
+                    prod.quote_increment, prod.base_increment, prod.id.c_str());
             }
             else {
                 fprintf(f, "%s,NAN,NAN,0.0,0.0,%.8f,%.8f,0.0,1,%.8f,0.000,%s\n",
                     prod.display_name.c_str(), prod.quote_increment,
-                    prod.quote_increment, prod.base_min_size, prod.id.c_str());
+                    prod.quote_increment, prod.base_increment, prod.id.c_str());
             }
         };
 
@@ -557,15 +564,16 @@ namespace gdax
             return 15; // full NFA compliant
 
         case GET_UUID:
-            strncpy((char*)dwParameter, s_lastOrder.c_str(), s_lastOrder.size() + 1);
+            strncpy((char*)dwParameter, s_uuid.c_str(), s_uuid.size() + 1);
             return dwParameter;
 
         case SET_UUID:
-            s_lastOrder = (char*)dwParameter;
+            s_uuid = (char*)dwParameter;
             return dwParameter;
 
         case SET_AMOUNT:
             s_amount = *(double*)dwParameter;
+            LOG_DIAG("SET_AMOUNT: %.8f\n", s_amount);
             break;
 
         case GET_MAXTICKS:
@@ -639,6 +647,7 @@ namespace gdax
         case SET_HWND:
         case GET_CALLBACK:
         case SET_ORDERTEXT:
+        case SET_CCY:
             break;
 
         case 2000: {
@@ -648,11 +657,6 @@ namespace gdax
 
         case 2001: {
             downloadAssets((char*)dwParameter);
-            break;
-        }
-
-        case 2002: {
-            s_residual = (uint32_t)dwParameter;
             break;
         }
 
