@@ -4,7 +4,7 @@
 
 ## Install
 
-To install the plugin, download the [latest release](https://github.com/kzhdev/gdax_zorro_plugin/releases/download/v0.0.2/Gdax_v0.0.2.zip) and place the Gdax.dll file into the **Plugin** folder under Zorro's root path.
+To install the plugin, download the [latest release](https://github.com/kzhdev/gdax_zorro_plugin/releases/download/v0.0.3/GdaxZorroPlugin_v0.0.3.zip) and place the Gdax.dll file into the **Plugin** folder under Zorro's root path.
 
 ## How to Use
 
@@ -84,19 +84,14 @@ To install the plugin, download the [latest release](https://github.com/kzhdev/g
   }
   ```
 
-* 1 lot equals the base_min_size of the product. Use brokerCommand 2002 to add additional frantion of lot
+* 1 lot equals the base_increment of the product. The Strategy needs to make sure that the order size satisfies the base_min_size.
 
   ```C++
-  // 1 Lot equals the base_min_size of the product
-  // For example, for BTC-USD, 1 lot = 0.0001 BTC
-  // The base_min_increment of BTC-USD is 0.00000001
-  // Use brokerCommand(2002, residual) to add additional fraction of lot to the Lots.
-  // For example:
+  // For example,the base_increment of BTC/USD is 0.00000001, the base_min_size of BTC/USD is 0.0001.
+  // Following code buys 0.0001 BTC at market price
   asset("BTC/USD");
-  Lots = 10;                    // order size is Lots * base_min_size, 10 * 0.0001
-  brokerCommand(2002, 5555);    // This command add additional size of 5555 * base_min_increment to the order size;
+  Lots = 10000;     // order size is Lots * base_increment, 10000 * 0.00000001
   enterLong();
-  // This buys 0.00105555 BTC at market price
   ```
 
 * Following Zorro Broker API functions has been implemented:
